@@ -2617,6 +2617,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+@app.on_event("startup")
+async def load_webhooks_from_db():
+    """Load registered webhooks from database on startup"""
+    try:
+        webhooks = await db.webhooks.find({}, {"_id": 0}).to_list(100)
+        for wh in webhooks:
+            try:
+                config = WebhookConfig(
+                    name=wh.get("name", "Unknown"),
+                    destination=WebhookDestination(wh.get("destination", "generic_webhook")),
+                    url=wh.get("url", ""),
+                    events=[WebhookEventType(e) for e in wh.get("events", [])],
+                    channel=wh.get("channel"),
+                    secret=wh.get("secret"),
+                    enabled=wh.get("enabled", True)
+                )
+                config.id = wh.get("id", config.id)
+                webhook_manager.webhooks[config.id] = config
+                logger.info(f"Loaded webhook from DB: {config.name}")
+            except Exception as e:
+                logger.error(f"Failed to load webhook {wh.get('id')}: {e}")
+        logger.info(f"Loaded {len(webhooks)} webhooks from database")
+    except Exception as e:
+        logger.error(f"Failed to load webhooks: {e}")
+
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()

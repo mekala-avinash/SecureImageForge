@@ -160,8 +160,8 @@ class WebhookManager:
         payload: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
-        Synchronous version of send_event for non-async contexts.
-        Logs delivery without actual HTTP call (for background processing).
+        Send event to all matching webhooks with REAL HTTP delivery.
+        Uses synchronous httpx client for immediate delivery.
         """
         deliveries = []
         
@@ -172,9 +172,58 @@ class WebhookManager:
             if event_type not in webhook.events:
                 continue
             
+            # Check rate limit
+            if not self._check_rate_limit():
+                logger.warning(f"Rate limit exceeded for webhook {webhook.name}")
+                continue
+            
+            # Format message for destination
+            message = self._format_message(webhook.destination, event_type, payload)
+            
             # Create delivery record
             delivery = self._create_pending_delivery(webhook, event_type)
-            delivery["status"] = "queued"
+            
+            # Actually deliver the webhook via HTTP
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    headers = {"Content-Type": "application/json"}
+                    
+                    if webhook.secret:
+                        headers["X-Webhook-Secret"] = webhook.secret
+                    
+                    response = client.post(
+                        webhook.url,
+                        json=message,
+                        headers=headers
+                    )
+                    
+                    if response.is_success:
+                        delivery["status"] = DeliveryStatus.SUCCESS.value
+                        delivery["response_code"] = response.status_code
+                        delivery["delivered_at"] = datetime.now(timezone.utc).isoformat()
+                        logger.info(f"Webhook delivered successfully: {webhook.name} - {event_type.value}")
+                    else:
+                        delivery["status"] = DeliveryStatus.FAILED.value
+                        delivery["response_code"] = response.status_code
+                        delivery["error"] = response.text[:200]
+                        webhook.failure_count += 1
+                        logger.warning(f"Webhook delivery failed: {webhook.name} - {response.status_code}")
+                        
+            except httpx.TimeoutException:
+                delivery["status"] = DeliveryStatus.FAILED.value
+                delivery["error"] = "Request timeout"
+                webhook.failure_count += 1
+                logger.error(f"Webhook timeout: {webhook.name}")
+            except httpx.RequestError as e:
+                delivery["status"] = DeliveryStatus.FAILED.value
+                delivery["error"] = str(e)[:200]
+                webhook.failure_count += 1
+                logger.error(f"Webhook request error: {webhook.name} - {e}")
+            except Exception as e:
+                delivery["status"] = DeliveryStatus.FAILED.value
+                delivery["error"] = f"Unexpected error: {str(e)[:100]}"
+                webhook.failure_count += 1
+                logger.error(f"Webhook unexpected error: {webhook.name} - {e}")
             
             deliveries.append(delivery)
             self.delivery_log.append(delivery)
@@ -182,8 +231,8 @@ class WebhookManager:
             # Update webhook stats
             webhook.last_delivery_at = datetime.now(timezone.utc)
             webhook.delivery_count += 1
-            
-            logger.info(f"Webhook event queued: {event_type.value} -> {webhook.name}")
+        
+        return deliveries
         
         return deliveries
     
