@@ -15,8 +15,32 @@ SecureImage Forge is an automated pipeline tool designed to build, harden, and v
 - **Database**: MongoDB
 - **CLI**: Click-based CLI (`/app/forge`)
 
+### Code Structure (Modular Refactoring in Progress)
+```
+/app/backend/
+├── server.py           # Main FastAPI app (~2700 lines, being modularized)
+├── database.py         # MongoDB connection module
+├── models/             # Pydantic data models
+│   ├── builds.py
+│   ├── policies.py
+│   └── common.py
+├── routes/             # API route modules (ready for gradual migration)
+│   ├── analytics.py
+│   ├── config.py
+│   ├── drift.py
+│   ├── exceptions.py
+│   ├── policies.py
+│   ├── registries.py
+│   ├── remediation.py
+│   ├── slsa.py
+│   ├── vex.py
+│   └── webhooks.py
+├── services/           # Business logic services
+└── cli/                # CLI interface
+```
+
 ### Key Files
-- `/app/backend/server.py` - Main FastAPI application (~2500 lines)
+- `/app/backend/server.py` - Main FastAPI application (~2700 lines)
 - `/app/frontend/src/App.js` - React router and main components
 - `/app/frontend/src/components/EnhancedNewBuild.js` - Advanced build config form
 - `/app/frontend/src/components/BuildDetail.js` - Build details with SLSA/VEX/remediation tabs
@@ -193,7 +217,12 @@ SecureImage Forge is an automated pipeline tool designed to build, harden, and v
 - ✅ COMPLETED: Sigstore library installed and ready for CI/CD environments
 
 ### P2 - Medium Priority
-- Refactor server.py (~2600 lines) into separate routers
+- ✅ IN PROGRESS: Refactor server.py - Created modular route structure in `/backend/routes/` and `/backend/models/` (2026-04-09)
+  - Created: analytics.py, config.py, drift.py, exceptions.py, policies.py, registries.py, remediation.py, slsa.py, vex.py, webhooks.py
+  - Next: Gradually migrate routes from server.py to modular files
+- Implement actual Docker builds (currently simulated)
+- Implement actual Trivy scanning
+- Connect to real Kubernetes API for drift detection
 - Phase 3 "Proactive Evergreen" (upstream monitoring, auto-PRs)
 - Implement actual Docker builds (currently simulated)
 - Implement actual Trivy scanning

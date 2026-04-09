@@ -1,3 +1,17 @@
+"""
+SecureImage Forge API - Main Server Module
+
+This is the main FastAPI application for SecureImage Forge.
+The codebase is being progressively modularized into:
+- /routes/ - API endpoint routers (analytics, policies, webhooks, etc.)
+- /models/ - Pydantic data models
+- /services/ - Business logic services
+- database.py - MongoDB connection
+
+For now, most routes remain in this file for stability.
+See /routes/__init__.py for the modular architecture plan.
+"""
+
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
