@@ -25,6 +25,7 @@ import { EnhancedNewBuild } from './components/EnhancedNewBuild';
 import { Exceptions } from './components/Exceptions';
 import { DriftDetection } from './components/DriftDetection';
 import { RemediationPolicies } from './components/RemediationPolicies';
+import { Webhooks } from './components/Webhooks';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -91,6 +92,13 @@ const Header = () => {
             data-testid="nav-remediation-policies"
           >
             Auto-Fix
+          </Link>
+          <Link 
+            to="/webhooks" 
+            className="text-sm font-medium hover:text-[#002FA7] transition-colors"
+            data-testid="nav-webhooks"
+          >
+            Webhooks
           </Link>
           <Link 
             to="/new" 
@@ -515,6 +523,7 @@ export default function App() {
           <Route path="/exceptions" element={<Exceptions />} />
           <Route path="/drift" element={<DriftDetection />} />
           <Route path="/remediation-policies" element={<RemediationPolicies />} />
+          <Route path="/webhooks" element={<Webhooks />} />
         </Routes>
       </BrowserRouter>
     </div>

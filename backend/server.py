@@ -28,11 +28,21 @@ from services.signing_service import sign_image, verify_signature, generate_atte
 from services.opa_engine import get_enterprise_policies, evaluate_rego_policy
 from services.exception_manager import ExceptionManager, ExceptionRequest, ExceptionStatus, get_exception_templates
 from services.drift_detector import DriftDetector, simulate_k8s_runtime_images
-from services.slsa_attestor import generate_slsa_l3_provenance, verify_slsa_provenance, get_slsa_requirements
-from services.vex_generator import generate_vex_document, VEXStatus
+from services.slsa_attestor import (
+    generate_slsa_provenance,
+    verify_slsa_provenance,
+    generate_attestation_bundle,
+    SLSALevel
+)
+from services.vex_generator import (
+    generate_vex_document,
+    get_vex_summary,
+    VEXStatus,
+    VEXJustification
+)
 from services.evergreen_pipeline import EvergreenPipeline, get_evergreen_stats
 from services.lifecycle_manager import LifecycleManager, DeprecationPolicy, ImageLifecycleStage, run_garbage_collection
-from services.webhook_manager import WebhookManager, WebhookConfig, WebhookEventType, WebhookDestination
+from services.webhook_manager import WebhookManager, WebhookConfig, WebhookEventType, WebhookDestination, DeliveryStatus
 # Import Vulnerability Remediation service
 from services.vulnerability_remediation import (
     analyze_vulnerabilities,
@@ -2163,6 +2173,430 @@ async def auto_remediate_with_policy(build_id: str):
         "fixes_count": remediated["fixes_applied_count"],
         "message": f"Auto-remediation completed with {remediated['fixes_applied_count']} fixes"
     }
+
+
+# =============================================================================
+# SLSA ATTESTATION ENDPOINTS (Phase 4 - Supply Chain Security)
+# =============================================================================
+
+@api_router.get("/builds/{build_id}/slsa")
+async def get_slsa_attestation(build_id: str, level: int = 3):
+    """Generate SLSA attestation for a build"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    config = await db.build_configs.find_one({"id": build.get("config_id")}, {"_id": 0})
+    if not config:
+        config = {"runtime": "java", "base_image": "alpine"}
+    
+    # Generate SLSA provenance
+    build_data = {
+        "id": build_id,
+        "image_tag": build.get("image_tag", f"secureforge/{config.get('runtime')}:latest"),
+        "started_at": build.get("started_at"),
+        "completed_at": build.get("completed_at")
+    }
+    
+    attestation_bundle = generate_attestation_bundle(build_data, config, slsa_level=level)
+    
+    # Store attestation
+    await db.slsa_attestations.update_one(
+        {"build_id": build_id},
+        {"$set": {
+            "build_id": build_id,
+            "slsa_level": level,
+            "attestation": attestation_bundle,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }},
+        upsert=True
+    )
+    
+    # Send webhook notification
+    webhook_manager.send_event(WebhookEventType.SLSA_ATTESTATION_GENERATED, {
+        "build_id": build_id,
+        "image_tag": build_data["image_tag"],
+        "slsa_level": level,
+        "detail_url": f"https://secureforge.enterprise/builds/{build_id}"
+    })
+    
+    return attestation_bundle
+
+
+@api_router.post("/builds/{build_id}/slsa/verify")
+async def verify_build_slsa(build_id: str):
+    """Verify SLSA attestation for a build"""
+    attestation = await db.slsa_attestations.find_one({"build_id": build_id}, {"_id": 0})
+    if not attestation:
+        raise HTTPException(status_code=404, detail="SLSA attestation not found. Generate one first.")
+    
+    provenance = attestation.get("attestation", {}).get("provenance", {})
+    verification = verify_slsa_provenance(provenance)
+    
+    return {
+        "build_id": build_id,
+        "verification": verification,
+        "slsa_level": attestation.get("slsa_level"),
+        "verified_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@api_router.get("/slsa/levels")
+async def get_slsa_level_info():
+    """Get information about SLSA levels and requirements"""
+    return {
+        "levels": {
+            1: {
+                "name": "Build L1",
+                "description": "Provenance exists and build is scripted",
+                "requirements": ["Scripted build", "Provenance generated"],
+                "trust_level": "Low"
+            },
+            2: {
+                "name": "Build L2",
+                "description": "Hosted build platform with signed provenance",
+                "requirements": ["Version controlled source", "Hosted build service", "Authenticated provenance"],
+                "trust_level": "Medium"
+            },
+            3: {
+                "name": "Build L3",
+                "description": "Hardened build platform with non-falsifiable provenance",
+                "requirements": ["Hardened platform", "Isolated execution", "Non-falsifiable provenance"],
+                "trust_level": "High"
+            },
+            4: {
+                "name": "Build L4",
+                "description": "Hermetic, reproducible builds with two-party review",
+                "requirements": ["Two-party review", "Hermetic builds", "Reproducible builds"],
+                "trust_level": "Very High"
+            }
+        },
+        "default_level": 3,
+        "recommended_for_production": 3
+    }
+
+
+# =============================================================================
+# VEX DOCUMENT ENDPOINTS (Phase 4 - Vulnerability Exploitability Exchange)
+# =============================================================================
+
+@api_router.get("/builds/{build_id}/vex")
+async def get_vex_document(build_id: str, format: str = "openvex"):
+    """Generate VEX document for a build"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    scan = await db.scan_results.find_one({"build_id": build_id}, {"_id": 0})
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan results not found")
+    
+    config = await db.build_configs.find_one({"id": build.get("config_id")}, {"_id": 0})
+    
+    # Generate VEX document
+    vex_doc = generate_vex_document(
+        build_id=build_id,
+        vulnerabilities=scan.get("vulnerabilities", {}),
+        image_tag=build.get("image_tag", f"secureforge/{config.get('runtime', 'app')}:latest"),
+        runtime=config.get("runtime", "java") if config else "java",
+        config=config,
+        output_format=format
+    )
+    
+    # Store VEX document
+    await db.vex_documents.update_one(
+        {"build_id": build_id},
+        {"$set": {
+            "build_id": build_id,
+            "format": format,
+            "document": vex_doc,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }},
+        upsert=True
+    )
+    
+    # Send webhook notification
+    summary = vex_doc.get("summary", {})
+    webhook_manager.send_event(WebhookEventType.VEX_DOCUMENT_GENERATED, {
+        "build_id": build_id,
+        "image_tag": build.get("image_tag"),
+        "false_positive_rate": summary.get("false_positive_rate", 0),
+        "not_affected": summary.get("not_affected", 0),
+        "affected": summary.get("affected", 0),
+        "detail_url": f"https://secureforge.enterprise/builds/{build_id}"
+    })
+    
+    return vex_doc
+
+
+@api_router.get("/builds/{build_id}/vex/summary")
+async def get_vex_summary_endpoint(build_id: str):
+    """Get executive summary of VEX analysis"""
+    vex_stored = await db.vex_documents.find_one({"build_id": build_id}, {"_id": 0})
+    
+    if not vex_stored:
+        # Generate VEX first
+        build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+        if not build:
+            raise HTTPException(status_code=404, detail="Build not found")
+        
+        scan = await db.scan_results.find_one({"build_id": build_id}, {"_id": 0})
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan results not found")
+        
+        config = await db.build_configs.find_one({"id": build.get("config_id")}, {"_id": 0})
+        
+        vex_doc = generate_vex_document(
+            build_id=build_id,
+            vulnerabilities=scan.get("vulnerabilities", {}),
+            image_tag=build.get("image_tag", "unknown"),
+            runtime=config.get("runtime", "java") if config else "java",
+            config=config
+        )
+    else:
+        vex_doc = vex_stored.get("document", {})
+    
+    summary = get_vex_summary(vex_doc)
+    
+    return {
+        "build_id": build_id,
+        "summary": summary
+    }
+
+
+@api_router.get("/vex/formats")
+async def get_vex_formats():
+    """Get supported VEX formats"""
+    return {
+        "formats": [
+            {
+                "id": "openvex",
+                "name": "OpenVEX",
+                "description": "OpenVEX specification for vulnerability exploitability",
+                "spec_url": "https://openvex.dev/",
+                "default": True
+            },
+            {
+                "id": "csaf",
+                "name": "CSAF VEX",
+                "description": "OASIS CSAF 2.0 VEX profile",
+                "spec_url": "https://docs.oasis-open.org/csaf/csaf/v2.0/csaf-v2.0.html",
+                "default": False
+            }
+        ],
+        "statuses": [
+            {"id": "not_affected", "description": "Vulnerability does not affect this product"},
+            {"id": "affected", "description": "Vulnerability affects this product"},
+            {"id": "fixed", "description": "Vulnerability has been fixed"},
+            {"id": "under_investigation", "description": "Status is being investigated"}
+        ],
+        "justifications": [
+            {"id": "component_not_present", "description": "Vulnerable component is not in the product"},
+            {"id": "vulnerable_code_not_present", "description": "Vulnerable code is not present"},
+            {"id": "vulnerable_code_not_in_execute_path", "description": "Vulnerable code is not executed"},
+            {"id": "vulnerable_code_cannot_be_controlled_by_adversary", "description": "Code cannot be exploited"},
+            {"id": "inline_mitigations_already_exist", "description": "Existing mitigations prevent exploitation"}
+        ]
+    }
+
+
+# =============================================================================
+# WEBHOOK MANAGEMENT ENDPOINTS (Phase 4 - ChatOps Integration)
+# =============================================================================
+
+@api_router.get("/webhooks")
+async def list_webhooks():
+    """List all registered webhooks"""
+    webhooks = webhook_manager.get_webhooks()
+    stats = webhook_manager.get_delivery_stats()
+    
+    return {
+        "webhooks": webhooks,
+        "stats": stats
+    }
+
+
+@api_router.post("/webhooks")
+async def create_webhook(webhook_data: Dict[str, Any]):
+    """Register a new webhook"""
+    required_fields = ["name", "destination", "url", "events"]
+    for field in required_fields:
+        if field not in webhook_data:
+            raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+    
+    try:
+        destination = WebhookDestination(webhook_data["destination"])
+    except ValueError:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid destination. Must be one of: {[d.value for d in WebhookDestination]}"
+        )
+    
+    try:
+        events = [WebhookEventType(e) for e in webhook_data["events"]]
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid event type: {e}")
+    
+    config = WebhookConfig(
+        name=webhook_data["name"],
+        destination=destination,
+        url=webhook_data["url"],
+        events=events,
+        channel=webhook_data.get("channel"),
+        secret=webhook_data.get("secret"),
+        enabled=webhook_data.get("enabled", True)
+    )
+    
+    webhook_id = webhook_manager.register_webhook(config)
+    
+    # Store in database for persistence
+    await db.webhooks.update_one(
+        {"id": webhook_id},
+        {"$set": {
+            "id": webhook_id,
+            "name": config.name,
+            "destination": config.destination.value,
+            "url": config.url,
+            "events": [e.value for e in config.events],
+            "channel": config.channel,
+            "enabled": config.enabled,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }},
+        upsert=True
+    )
+    
+    return {
+        "id": webhook_id,
+        "message": f"Webhook '{config.name}' registered successfully"
+    }
+
+
+@api_router.delete("/webhooks/{webhook_id}")
+async def delete_webhook(webhook_id: str):
+    """Delete a webhook"""
+    if webhook_manager.unregister_webhook(webhook_id):
+        await db.webhooks.delete_one({"id": webhook_id})
+        return {"message": "Webhook deleted successfully"}
+    
+    raise HTTPException(status_code=404, detail="Webhook not found")
+
+
+@api_router.patch("/webhooks/{webhook_id}")
+async def update_webhook(webhook_id: str, updates: Dict[str, Any]):
+    """Update webhook configuration"""
+    webhook = webhook_manager.update_webhook(webhook_id, updates)
+    if not webhook:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    
+    # Update in database
+    await db.webhooks.update_one(
+        {"id": webhook_id},
+        {"$set": updates}
+    )
+    
+    return {"message": "Webhook updated successfully", "webhook": webhook.to_dict()}
+
+
+@api_router.post("/webhooks/{webhook_id}/test")
+async def test_webhook(webhook_id: str):
+    """Send a test event to a webhook"""
+    if webhook_id not in webhook_manager.webhooks:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    
+    test_payload = {
+        "build_id": "test-build-123",
+        "image_tag": "secureforge/test:latest",
+        "message": "This is a test notification from SecureImage Forge",
+        "detail_url": "https://secureforge.enterprise/test"
+    }
+    
+    # Temporarily enable all events for the test
+    webhook = webhook_manager.webhooks[webhook_id]
+    original_events = webhook.events
+    webhook.events = [WebhookEventType.BUILD_COMPLETED]
+    
+    try:
+        # Use async method for delivery
+        deliveries = await webhook_manager.send_event_async(
+            WebhookEventType.BUILD_COMPLETED,
+            test_payload,
+            sync=True
+        )
+        
+        if deliveries and deliveries[0].get("status") == "success":
+            return {
+                "status": "success",
+                "message": "Test webhook delivered successfully",
+                "delivery": deliveries[0]
+            }
+        else:
+            return {
+                "status": "queued",
+                "message": "Test webhook queued for delivery",
+                "delivery": deliveries[0] if deliveries else None
+            }
+    finally:
+        webhook.events = original_events
+
+
+@api_router.get("/webhooks/events")
+async def list_webhook_events():
+    """List all available webhook event types"""
+    return {
+        "events": [
+            {"id": e.value, "name": e.name, "description": _get_event_description(e)}
+            for e in WebhookEventType
+        ]
+    }
+
+
+@api_router.get("/webhooks/destinations")
+async def list_webhook_destinations():
+    """List supported webhook destinations"""
+    return {
+        "destinations": [
+            {"id": "slack", "name": "Slack", "description": "Slack Incoming Webhooks with Block Kit"},
+            {"id": "microsoft_teams", "name": "Microsoft Teams", "description": "Teams Incoming Webhooks with Adaptive Cards"},
+            {"id": "discord", "name": "Discord", "description": "Discord Webhooks with Embeds"},
+            {"id": "generic_webhook", "name": "Generic HTTP", "description": "Standard HTTP POST with JSON payload"}
+        ]
+    }
+
+
+@api_router.get("/webhooks/delivery-history")
+async def get_webhook_delivery_history(limit: int = 50):
+    """Get webhook delivery history"""
+    history = webhook_manager.get_delivery_history(limit)
+    stats = webhook_manager.get_delivery_stats()
+    
+    return {
+        "deliveries": history,
+        "stats": stats
+    }
+
+
+def _get_event_description(event: WebhookEventType) -> str:
+    """Get description for webhook event type"""
+    descriptions = {
+        WebhookEventType.BUILD_STARTED: "Triggered when a new build starts",
+        WebhookEventType.BUILD_COMPLETED: "Triggered when a build completes successfully",
+        WebhookEventType.BUILD_FAILED: "Triggered when a build fails",
+        WebhookEventType.CRITICAL_CVE_DETECTED: "Triggered when critical vulnerabilities are detected",
+        WebhookEventType.REMEDIATION_APPLIED: "Triggered when auto-remediation is applied",
+        WebhookEventType.REMEDIATION_FAILED: "Triggered when auto-remediation fails",
+        WebhookEventType.IMAGE_DEPRECATED: "Triggered when an image is marked as deprecated",
+        WebhookEventType.IMAGE_TOMBSTONED: "Triggered when an image is tombstoned",
+        WebhookEventType.BASE_IMAGE_UPDATED: "Triggered when a base image update is available",
+        WebhookEventType.POLICY_VIOLATION: "Triggered when a policy violation is detected",
+        WebhookEventType.DRIFT_DETECTED: "Triggered when configuration drift is detected",
+        WebhookEventType.DRIFT_RESOLVED: "Triggered when drift is resolved",
+        WebhookEventType.EXCEPTION_REQUESTED: "Triggered when an exception is requested",
+        WebhookEventType.EXCEPTION_APPROVED: "Triggered when an exception is approved",
+        WebhookEventType.EXCEPTION_REJECTED: "Triggered when an exception is rejected",
+        WebhookEventType.SLSA_ATTESTATION_GENERATED: "Triggered when SLSA attestation is generated",
+        WebhookEventType.VEX_DOCUMENT_GENERATED: "Triggered when VEX document is generated"
+    }
+    return descriptions.get(event, event.value)
 
 
 # Include the router in the main app

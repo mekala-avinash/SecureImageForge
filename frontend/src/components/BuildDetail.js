@@ -15,7 +15,10 @@ import {
   ClipboardText,
   Download,
   CaretDown,
-  CaretUp
+  CaretUp,
+  Lock,
+  Certificate,
+  MagnifyingGlass
 } from '@phosphor-icons/react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -41,6 +44,12 @@ export const BuildDetail = () => {
   const [remediationResult, setRemediationResult] = useState(null);
   const [expandedCves, setExpandedCves] = useState({});
   const [copiedDockerfile, setCopiedDockerfile] = useState(false);
+  
+  // SLSA and VEX state
+  const [slsaAttestation, setSlsaAttestation] = useState(null);
+  const [vexDocument, setVexDocument] = useState(null);
+  const [loadingSlsa, setLoadingSlsa] = useState(false);
+  const [loadingVex, setLoadingVex] = useState(false);
 
   useEffect(() => {
     fetchBuildDetails();
@@ -238,7 +247,7 @@ export const BuildDetail = () => {
       {/* Tabs */}
       <div className="bg-white border border-black/10 rounded-sm overflow-hidden">
         <div className="border-b border-black/10 flex overflow-x-auto">
-          {['logs', 'vulnerabilities', 'compliance', 'remediation', 'sbom'].map((tab) => (
+          {['logs', 'vulnerabilities', 'compliance', 'remediation', 'slsa', 'vex', 'sbom'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -708,6 +717,291 @@ export const BuildDetail = () => {
               ) : (
                 <div className="text-center py-8 text-[#4B5563]">
                   Remediation suggestions not available yet
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* SLSA Attestation Tab */}
+          {activeTab === 'slsa' && (
+            <div data-testid="slsa-content">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-bold" style={{fontFamily: 'Chivo'}}>SLSA Provenance Attestation</h3>
+                {!slsaAttestation && (
+                  <button
+                    onClick={async () => {
+                      setLoadingSlsa(true);
+                      try {
+                        const res = await axios.get(`${API}/builds/${buildId}/slsa?level=3`);
+                        setSlsaAttestation(res.data);
+                      } catch (err) {
+                        alert('Failed to generate SLSA attestation: ' + err.message);
+                      } finally {
+                        setLoadingSlsa(false);
+                      }
+                    }}
+                    disabled={loadingSlsa}
+                    className="btn-primary flex items-center gap-2"
+                    data-testid="generate-slsa-btn"
+                  >
+                    {loadingSlsa ? (
+                      <>
+                        <Clock size={16} className="animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <Lock size={16} weight="bold" />
+                        Generate SLSA Attestation
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+              
+              {slsaAttestation ? (
+                <div className="space-y-4">
+                  {/* Verification Status */}
+                  <div className={`p-4 rounded-sm border ${slsaAttestation.verification?.verified ? 'bg-[#34C759]/10 border-[#34C759]/30' : 'bg-[#FF3B30]/10 border-[#FF3B30]/30'}`}>
+                    <div className="flex items-center gap-3">
+                      {slsaAttestation.verification?.verified ? (
+                        <CheckCircle size={24} weight="fill" className="text-[#34C759]" />
+                      ) : (
+                        <XCircle size={24} weight="fill" className="text-[#FF3B30]" />
+                      )}
+                      <div>
+                        <div className="font-bold">
+                          {slsaAttestation.verification?.verified ? 'Provenance Verified' : 'Verification Failed'}
+                        </div>
+                        <div className="text-sm text-[#4B5563]">
+                          Trust Score: {slsaAttestation.verification?.trust_score}% | 
+                          SLSA Level {slsaAttestation.slsa_level}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Attestation Details */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="p-4 border border-black/10 rounded-sm">
+                      <div className="text-xs uppercase tracking-wider text-[#4B5563] mb-2">Bundle ID</div>
+                      <div className="font-mono text-sm">{slsaAttestation.bundle_id}</div>
+                    </div>
+                    <div className="p-4 border border-black/10 rounded-sm">
+                      <div className="text-xs uppercase tracking-wider text-[#4B5563] mb-2">Created At</div>
+                      <div className="text-sm">{new Date(slsaAttestation.created_at).toLocaleString()}</div>
+                    </div>
+                  </div>
+                  
+                  {/* SLSA Level Compliance */}
+                  <div className="p-4 border border-black/10 rounded-sm">
+                    <h4 className="font-bold mb-3">SLSA Level {slsaAttestation.slsa_level} Compliance</h4>
+                    <div className="grid grid-cols-2 gap-2">
+                      {slsaAttestation.provenance?.slsa_verification?.compliance_status?.checks &&
+                        Object.entries(slsaAttestation.provenance.slsa_verification.compliance_status.checks).map(([check, passed]) => (
+                          <div key={check} className="flex items-center gap-2 text-sm">
+                            {passed ? (
+                              <CheckCircle size={16} weight="fill" className="text-[#34C759]" />
+                            ) : (
+                              <XCircle size={16} weight="fill" className="text-[#FF3B30]" />
+                            )}
+                            <span className="capitalize">{check.replace(/_/g, ' ')}</span>
+                          </div>
+                        ))
+                      }
+                    </div>
+                  </div>
+                  
+                  {/* Download Buttons */}
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => {
+                        const blob = new Blob([JSON.stringify(slsaAttestation.provenance, null, 2)], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `slsa-provenance-${buildId}.json`;
+                        a.click();
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 border border-black/20 rounded-sm hover:border-[#002FA7]"
+                      data-testid="download-slsa-btn"
+                    >
+                      <Download size={16} />
+                      Download Provenance (JSON)
+                    </button>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(slsaAttestation.provenance_base64);
+                        alert('Base64 provenance copied to clipboard!');
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 border border-black/20 rounded-sm hover:border-[#002FA7]"
+                    >
+                      <ClipboardText size={16} />
+                      Copy Base64
+                    </button>
+                  </div>
+                  
+                  {/* Raw Provenance */}
+                  <details className="border border-black/10 rounded-sm">
+                    <summary className="px-4 py-3 cursor-pointer font-medium">View Raw Provenance</summary>
+                    <div className="bg-[#0A0A0A] text-[#34C759] p-4 rounded-b-sm overflow-x-auto max-h-80">
+                      <pre className="text-xs font-mono">{JSON.stringify(slsaAttestation.provenance, null, 2)}</pre>
+                    </div>
+                  </details>
+                </div>
+              ) : (
+                <div className="text-center py-12 border border-dashed border-black/20 rounded-sm">
+                  <Lock size={48} className="mx-auto mb-4 text-[#E5E7EB]" />
+                  <p className="text-[#4B5563] mb-2">No SLSA attestation generated yet</p>
+                  <p className="text-sm text-[#4B5563]">Generate a SLSA Level 3 provenance attestation for this build</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* VEX Document Tab */}
+          {activeTab === 'vex' && (
+            <div data-testid="vex-content">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-bold" style={{fontFamily: 'Chivo'}}>VEX Analysis</h3>
+                {!vexDocument && (
+                  <button
+                    onClick={async () => {
+                      setLoadingVex(true);
+                      try {
+                        const res = await axios.get(`${API}/builds/${buildId}/vex`);
+                        setVexDocument(res.data);
+                      } catch (err) {
+                        alert('Failed to generate VEX document: ' + err.message);
+                      } finally {
+                        setLoadingVex(false);
+                      }
+                    }}
+                    disabled={loadingVex}
+                    className="btn-primary flex items-center gap-2"
+                    data-testid="generate-vex-btn"
+                  >
+                    {loadingVex ? (
+                      <>
+                        <Clock size={16} className="animate-spin" />
+                        Analyzing...
+                      </>
+                    ) : (
+                      <>
+                        <MagnifyingGlass size={16} weight="bold" />
+                        Generate VEX Analysis
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+              
+              {vexDocument ? (
+                <div className="space-y-4">
+                  {/* VEX Summary */}
+                  <div className="p-4 bg-[#002FA7]/10 border border-[#002FA7]/30 rounded-sm">
+                    <h4 className="font-bold text-[#002FA7] mb-3">Exploitability Analysis Summary</h4>
+                    <div className="grid grid-cols-4 gap-4">
+                      <div className="text-center p-3 bg-white rounded-sm">
+                        <div className="text-2xl font-bold">{vexDocument.summary?.total_vulnerabilities || 0}</div>
+                        <div className="text-xs uppercase tracking-wider text-[#4B5563]">Total CVEs</div>
+                      </div>
+                      <div className="text-center p-3 bg-white rounded-sm">
+                        <div className="text-2xl font-bold text-[#34C759]">{vexDocument.summary?.not_affected || 0}</div>
+                        <div className="text-xs uppercase tracking-wider text-[#4B5563]">Not Exploitable</div>
+                      </div>
+                      <div className="text-center p-3 bg-white rounded-sm">
+                        <div className="text-2xl font-bold text-[#FF3B30]">{vexDocument.summary?.affected || 0}</div>
+                        <div className="text-xs uppercase tracking-wider text-[#4B5563]">Exploitable</div>
+                      </div>
+                      <div className="text-center p-3 bg-white rounded-sm">
+                        <div className="text-2xl font-bold text-[#002FA7]">{vexDocument.summary?.false_positive_rate || 0}%</div>
+                        <div className="text-xs uppercase tracking-wider text-[#4B5563]">False Positive Rate</div>
+                      </div>
+                    </div>
+                    
+                    {/* Risk Reduction */}
+                    <div className="mt-4 p-3 bg-white rounded-sm">
+                      <div className="flex items-center justify-between text-sm">
+                        <span>Risk Score Reduction</span>
+                        <span className="font-bold">
+                          {vexDocument.summary?.risk_score_before || 0} → {vexDocument.summary?.risk_score_after || 0}
+                        </span>
+                      </div>
+                      <div className="mt-2 h-2 bg-black/10 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-[#34C759] transition-all"
+                          style={{ 
+                            width: `${100 - (vexDocument.summary?.risk_score_after || 0) / Math.max(vexDocument.summary?.risk_score_before || 1, 1) * 100}%` 
+                          }}
+                        />
+                      </div>
+                      <div className="text-xs text-[#4B5563] mt-1">
+                        {vexDocument.summary?.actual_risk_reduction}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* VEX Statements */}
+                  <div className="border border-black/10 rounded-sm">
+                    <div className="px-4 py-3 border-b border-black/10 font-bold">Vulnerability Statements</div>
+                    <div className="divide-y divide-black/10 max-h-96 overflow-y-auto">
+                      {vexDocument.statements?.map((stmt, idx) => (
+                        <div key={idx} className={`p-4 ${stmt.status === 'not_affected' ? 'bg-[#34C759]/5' : stmt.status === 'affected' ? 'bg-[#FF3B30]/5' : 'bg-[#FFCC00]/5'}`}>
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              {stmt.status === 'not_affected' ? (
+                                <CheckCircle size={16} weight="fill" className="text-[#34C759]" />
+                              ) : stmt.status === 'affected' ? (
+                                <XCircle size={16} weight="fill" className="text-[#FF3B30]" />
+                              ) : (
+                                <Clock size={16} weight="fill" className="text-[#FFCC00]" />
+                              )}
+                              <span className="font-medium">{stmt.vulnerability?.name}</span>
+                            </div>
+                            <span className={`text-xs px-2 py-1 rounded-full ${
+                              stmt.status === 'not_affected' ? 'bg-[#34C759] text-white' : 
+                              stmt.status === 'affected' ? 'bg-[#FF3B30] text-white' : 
+                              'bg-[#FFCC00] text-black'
+                            }`}>
+                              {stmt.status?.toUpperCase().replace('_', ' ')}
+                            </span>
+                          </div>
+                          {stmt.impact_statement && (
+                            <p className="text-sm text-[#4B5563]">{stmt.impact_statement}</p>
+                          )}
+                          {stmt.justification && (
+                            <p className="text-xs text-[#4B5563] mt-1 italic">
+                              Justification: {stmt.justification.replace(/_/g, ' ')}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  
+                  {/* Download Button */}
+                  <button
+                    onClick={() => {
+                      const blob = new Blob([JSON.stringify(vexDocument, null, 2)], { type: 'application/json' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `vex-${buildId}.json`;
+                      a.click();
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 border border-black/20 rounded-sm hover:border-[#002FA7]"
+                    data-testid="download-vex-btn"
+                  >
+                    <Download size={16} />
+                    Download VEX Document (OpenVEX)
+                  </button>
+                </div>
+              ) : (
+                <div className="text-center py-12 border border-dashed border-black/20 rounded-sm">
+                  <MagnifyingGlass size={48} className="mx-auto mb-4 text-[#E5E7EB]" />
+                  <p className="text-[#4B5563] mb-2">No VEX analysis generated yet</p>
+                  <p className="text-sm text-[#4B5563]">Generate a VEX document to identify false positive vulnerabilities</p>
                 </div>
               )}
             </div>
