@@ -17,6 +17,7 @@ import {
 import { BuildDetail } from './components/BuildDetail';
 import { BuildsList } from './components/BuildsList';
 import { Analytics } from './components/Analytics';
+import { Policies } from './components/Policies';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -55,6 +56,13 @@ const Header = () => {
             data-testid="nav-analytics"
           >
             Analytics
+          </Link>
+          <Link 
+            to="/policies" 
+            className="text-sm font-medium hover:text-[#002FA7] transition-colors"
+            data-testid="nav-policies"
+          >
+            Policies
           </Link>
           <Link 
             to="/new" 
@@ -229,6 +237,7 @@ const NewBuild = () => {
     runtime: 'java',
     base_image: 'alpine',
     compliance_profiles: ['cis'],
+    architecture: ['amd64'],  // Phase 3: Multi-arch
     remove_shell: true,
     remove_package_manager: true,
     enable_sbom: true,
@@ -257,6 +266,15 @@ const NewBuild = () => {
       compliance_profiles: prev.compliance_profiles.includes(profile)
         ? prev.compliance_profiles.filter(p => p !== profile)
         : [...prev.compliance_profiles, profile]
+    }));
+  };
+
+  const toggleArchitecture = (arch) => {
+    setFormData(prev => ({
+      ...prev,
+      architecture: prev.architecture.includes(arch)
+        ? prev.architecture.filter(a => a !== arch)
+        : [...prev.architecture, arch]
     }));
   };
 
@@ -331,6 +349,34 @@ const NewBuild = () => {
               </button>
             ))}
           </div>
+        </div>
+
+        {/* Architecture - Phase 3 */}
+        <div className="mb-6">
+          <label className="block text-sm uppercase tracking-wider font-medium mb-2">
+            Target Architecture
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            {['amd64', 'arm64'].map((arch) => (
+              <button
+                key={arch}
+                type="button"
+                onClick={() => toggleArchitecture(arch)}
+                className={`p-4 border rounded-sm text-center transition-all ${
+                  formData.architecture.includes(arch)
+                    ? 'border-[#002FA7] bg-[#002FA7]/5'
+                    : 'border-black/10 hover:border-black/30'
+                }`}
+                data-testid={`arch-${arch}`}
+              >
+                <div className="text-sm font-medium uppercase tracking-wider">{arch}</div>
+                {formData.architecture.length > 1 && formData.architecture.includes(arch) && (
+                  <div className="text-xs mt-1 text-[#002FA7]">Multi-arch</div>
+                )}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-[#4B5563] mt-2">Select one or both architectures for multi-platform builds</p>
         </div>
 
         {/* Compliance Profiles */}
@@ -437,6 +483,7 @@ export default function App() {
           <Route path="/builds" element={<BuildsList />} />
           <Route path="/builds/:buildId" element={<BuildDetail />} />
           <Route path="/analytics" element={<Analytics />} />
+          <Route path="/policies" element={<Policies />} />
         </Routes>
       </BrowserRouter>
     </div>

@@ -20,6 +20,10 @@ import sys
 sys.path.append(str(Path(__file__).parent))
 from services.health_score import calculate_health_score, get_health_grade, get_health_status
 from services.remediation_engine import generate_remediation_suggestions, get_cis_benchmark_score
+# Import Phase 3 services
+from services.policy_engine import evaluate_all_policies, POLICY_TEMPLATES, get_policy_recommendation
+from services.image_updater import check_for_updates, generate_update_recommendation, simulate_cve_in_old_version
+from services.signing_service import sign_image, verify_signature, generate_attestation
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -65,6 +69,7 @@ class BuildConfigCreate(BaseModel):
     remove_package_manager: bool = True
     enable_sbom: bool = True
     enable_signing: bool = True
+    architecture: List[str] = Field(default_factory=lambda: ["amd64"])  # Phase 3: Multi-arch support
 
 class BuildHistory(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -77,6 +82,9 @@ class BuildHistory(BaseModel):
     vulnerability_count: Optional[Dict[str, int]] = None
     compliance_score: Optional[int] = None
     sbom_path: Optional[str] = None
+    is_signed: bool = False  # Phase 3
+    signature_id: Optional[str] = None  # Phase 3
+    architecture: List[str] = Field(default_factory=lambda: ["amd64"])  # Phase 3
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: Optional[datetime] = None
 
@@ -132,6 +140,39 @@ class BuildAnalytics(BaseModel):
     avg_compliance_score: int
     total_vulnerabilities: Dict[str, int]
     trend_data: List[Dict[str, Any]]
+
+# Phase 3 Models
+class Policy(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    description: str
+    type: str  # vulnerability, compliance, configuration, security, freshness
+    enforcement: str  # block, warn, info
+    rule: Dict[str, Any]
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class PolicyCreate(BaseModel):
+    name: str
+    description: str
+    type: str
+    enforcement: str
+    rule: Dict[str, Any]
+    enabled: bool = True
+
+class BuildConfigExtended(BuildConfigCreate):
+    architecture: List[str] = Field(default_factory=lambda: ["amd64"])  # amd64, arm64
+    
+class ImageSignature(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    signature_id: str
+    build_id: str
+    image_tag: str
+    digest: str
+    signing_method: str
+    signed_at: datetime
+    verified: bool = False
 
 # Dockerfile Templates
 DOCKERFILE_TEMPLATES = {
@@ -501,6 +542,28 @@ async def build_image_task(config_dict: dict, build_id: str):
                 {"id": build_id},
                 {"$push": {"logs": f"Health score: {health_score} ({health_grade})"}}
             )
+            
+            # Phase 3: Sign the image if enabled
+            if config.enable_signing:
+                try:
+                    signature = sign_image(image_tag, build_id, final_build.get('sbom_path'))
+                    await db.signatures.insert_one(signature)
+                    
+                    await db.build_history.update_one(
+                        {"id": build_id},
+                        {
+                            "$set": {
+                                "is_signed": True,
+                                "signature_id": signature['signature_id']
+                            },
+                            "$push": {"logs": f"Image signed: {signature['signature_id'][:8]}..."}
+                        }
+                    )
+                except Exception as e:
+                    await db.build_history.update_one(
+                        {"id": build_id},
+                        {"$push": {"logs": f"Warning: Signing failed: {str(e)}"}}
+                    )
         
     except Exception as e:
         await db.build_history.update_one(
@@ -901,6 +964,298 @@ async def get_success_rate_analytics(days: int = 30):
         "completed": completed,
         "failed": failed,
         "success_rate": round(success_rate, 2)
+    }
+
+# ============ PHASE 3 ENDPOINTS ============
+
+# Policy Management
+@api_router.post("/policies", response_model=Policy)
+async def create_policy(policy: PolicyCreate):
+    """Create a new custom policy"""
+    policy_obj = Policy(**policy.model_dump())
+    policy_dict = policy_obj.model_dump()
+    policy_dict['created_at'] = policy_dict['created_at'].isoformat()
+    
+    await db.policies.insert_one(policy_dict)
+    return policy_obj
+
+@api_router.get("/policies", response_model=List[Policy])
+async def get_policies():
+    """Get all policies"""
+    policies = await db.policies.find({}, {"_id": 0}).to_list(1000)
+    
+    for policy in policies:
+        if isinstance(policy.get('created_at'), str):
+            policy['created_at'] = datetime.fromisoformat(policy['created_at'])
+    
+    return policies
+
+@api_router.get("/policies/templates")
+async def get_policy_templates():
+    """Get pre-built policy templates"""
+    return {"templates": POLICY_TEMPLATES}
+
+@api_router.get("/policies/{policy_id}")
+async def get_policy(policy_id: str):
+    """Get specific policy"""
+    policy = await db.policies.find_one({"id": policy_id}, {"_id": 0})
+    
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    
+    if isinstance(policy.get('created_at'), str):
+        policy['created_at'] = datetime.fromisoformat(policy['created_at'])
+    
+    return policy
+
+@api_router.put("/policies/{policy_id}")
+async def update_policy(policy_id: str, policy_update: PolicyCreate):
+    """Update a policy"""
+    result = await db.policies.update_one(
+        {"id": policy_id},
+        {"$set": policy_update.model_dump()}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    
+    return {"message": "Policy updated successfully"}
+
+@api_router.delete("/policies/{policy_id}")
+async def delete_policy(policy_id: str):
+    """Delete a policy"""
+    result = await db.policies.delete_one({"id": policy_id})
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    
+    return {"message": "Policy deleted successfully"}
+
+@api_router.post("/policies/{policy_id}/toggle")
+async def toggle_policy(policy_id: str):
+    """Enable/disable a policy"""
+    policy = await db.policies.find_one({"id": policy_id}, {"_id": 0})
+    
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    
+    new_state = not policy.get('enabled', True)
+    await db.policies.update_one(
+        {"id": policy_id},
+        {"$set": {"enabled": new_state}}
+    )
+    
+    return {"enabled": new_state}
+
+@api_router.post("/builds/{build_id}/evaluate-policies")
+async def evaluate_build_policies(build_id: str):
+    """Evaluate all active policies against a build"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    config = await db.build_configs.find_one({"id": build['config_id']}, {"_id": 0})
+    
+    # Get all enabled policies
+    policies = await db.policies.find({"enabled": True}, {"_id": 0}).to_list(1000)
+    
+    if not policies:
+        return {
+            "build_id": build_id,
+            "total_policies": 0,
+            "message": "No active policies to evaluate"
+        }
+    
+    # Convert datetime strings
+    if isinstance(build.get('started_at'), str):
+        build['started_at'] = datetime.fromisoformat(build['started_at'])
+    if build.get('completed_at') and isinstance(build['completed_at'], str):
+        build['completed_at'] = datetime.fromisoformat(build['completed_at'])
+    
+    # Evaluate policies
+    evaluation = evaluate_all_policies(policies, build, config)
+    evaluation['build_id'] = build_id
+    
+    # Store evaluation results
+    await db.policy_evaluations.insert_one({
+        "build_id": build_id,
+        "evaluation": evaluation,
+        "evaluated_at": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return evaluation
+
+@api_router.get("/builds/{build_id}/policy-recommendations")
+async def get_build_policy_recommendations(build_id: str):
+    """Get policy recommendations for a build"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    # Convert datetime strings
+    if isinstance(build.get('started_at'), str):
+        build['started_at'] = datetime.fromisoformat(build['started_at'])
+    if build.get('completed_at') and isinstance(build['completed_at'], str):
+        build['completed_at'] = datetime.fromisoformat(build['completed_at'])
+    
+    recommendations = get_policy_recommendation(build)
+    recommended_policies = [POLICY_TEMPLATES[rec] for rec in recommendations if rec in POLICY_TEMPLATES]
+    
+    return {
+        "build_id": build_id,
+        "recommended_policies": recommended_policies,
+        "recommendation_count": len(recommended_policies)
+    }
+
+# Base Image Updates
+@api_router.get("/builds/{build_id}/check-updates")
+async def check_build_updates(build_id: str):
+    """Check for available updates for a build's base image and runtime"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    config = await db.build_configs.find_one({"id": build['config_id']}, {"_id": 0})
+    if not config:
+        raise HTTPException(status_code=404, detail="Build configuration not found")
+    
+    update_info = check_for_updates(config['base_image'], config['runtime'])
+    recommendation = generate_update_recommendation(update_info)
+    cves_fixed = simulate_cve_in_old_version(config['base_image'], config['runtime'])
+    
+    # Store update check
+    await db.update_checks.insert_one({
+        "build_id": build_id,
+        "update_info": update_info,
+        "recommendation": recommendation,
+        "cves_fixed_by_update": cves_fixed,
+        "checked_at": datetime.now(timezone.utc).isoformat()
+    })
+    
+    return {
+        "build_id": build_id,
+        "update_info": update_info,
+        "recommendation": recommendation,
+        "cves_fixed_by_update": cves_fixed
+    }
+
+@api_router.get("/updates/summary")
+async def get_updates_summary():
+    """Get summary of available updates across all builds"""
+    configs = await db.build_configs.find({}, {"_id": 0}).to_list(1000)
+    
+    updates_available = []
+    for config in configs:
+        update_info = check_for_updates(config['base_image'], config['runtime'])
+        if update_info['has_updates']:
+            recommendation = generate_update_recommendation(update_info)
+            updates_available.append({
+                "config_id": config['id'],
+                "config_name": config['name'],
+                "base_image": config['base_image'],
+                "runtime": config['runtime'],
+                "update_info": update_info,
+                "priority": recommendation.get('priority', 3)
+            })
+    
+    # Sort by priority
+    updates_available.sort(key=lambda x: x['priority'])
+    
+    return {
+        "total_configs": len(configs),
+        "updates_available": len(updates_available),
+        "high_priority": sum(1 for u in updates_available if u['priority'] <= 2),
+        "updates": updates_available
+    }
+
+# Image Signing
+@api_router.post("/builds/{build_id}/sign")
+async def sign_build_image(build_id: str):
+    """Sign a completed build's image"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    if build['status'] != 'completed':
+        raise HTTPException(status_code=400, detail="Only completed builds can be signed")
+    
+    # Sign the image
+    signature = sign_image(build['image_tag'], build_id, build.get('sbom_path'))
+    
+    # Store signature
+    await db.signatures.insert_one(signature)
+    
+    # Update build with signature info
+    await db.build_history.update_one(
+        {"id": build_id},
+        {
+            "$set": {
+                "is_signed": True,
+                "signature_id": signature['signature_id']
+            },
+            "$push": {"logs": f"Image signed with signature ID: {signature['signature_id']}"}
+        }
+    )
+    
+    return signature
+
+@api_router.get("/builds/{build_id}/signature")
+async def get_build_signature(build_id: str):
+    """Get signature information for a build"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    if not build.get('is_signed'):
+        raise HTTPException(status_code=404, detail="Build is not signed")
+    
+    signature = await db.signatures.find_one({"build_id": build_id}, {"_id": 0})
+    
+    if not signature:
+        raise HTTPException(status_code=404, detail="Signature not found")
+    
+    # Verify signature
+    verification = verify_signature(signature)
+    
+    return {
+        "signature": signature,
+        "verification": verification
+    }
+
+@api_router.get("/builds/{build_id}/attestation")
+async def get_build_attestation(build_id: str):
+    """Get SLSA provenance attestation for a build"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    attestation = generate_attestation(build_id, build)
+    
+    return attestation
+
+@api_router.get("/signatures/verify/{image_tag}")
+async def verify_image_signature(image_tag: str):
+    """Verify signature for an image tag"""
+    signature = await db.signatures.find_one({"image_tag": image_tag}, {"_id": 0})
+    
+    if not signature:
+        raise HTTPException(status_code=404, detail="No signature found for this image")
+    
+    verification = verify_signature(signature)
+    
+    return verification
+
+# Multi-arch support info
+@api_router.get("/architectures")
+async def get_supported_architectures():
+    """Get list of supported architectures"""
+    return {
+        "supported": ["amd64", "arm64"],
+        "default": "amd64",
+        "multi_arch_builds": True
     }
 
 # Include the router in the main app

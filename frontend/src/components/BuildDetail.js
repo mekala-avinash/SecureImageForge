@@ -24,6 +24,8 @@ export const BuildDetail = () => {
   const [sbom, setSbom] = useState(null);
   const [healthScore, setHealthScore] = useState(null);
   const [remediationSuggestions, setRemediationSuggestions] = useState(null);
+  const [signature, setSignature] = useState(null);
+  const [updateInfo, setUpdateInfo] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('logs');
 
@@ -45,18 +47,31 @@ export const BuildDetail = () => {
 
       if (buildRes.data.status === 'completed') {
         try {
-          const [scanRes, complianceRes, sbomRes, healthRes, remediationRes] = await Promise.all([
+          const promises = [
             axios.get(`${API}/builds/${buildId}/scan`),
             axios.get(`${API}/builds/${buildId}/compliance`),
             axios.get(`${API}/builds/${buildId}/sbom`),
             axios.get(`${API}/builds/${buildId}/health`),
-            axios.get(`${API}/builds/${buildId}/remediation`)
-          ]);
-          setScanResults(scanRes.data);
-          setComplianceReport(complianceRes.data);
-          setSbom(sbomRes.data);
-          setHealthScore(healthRes.data);
-          setRemediationSuggestions(remediationRes.data);
+            axios.get(`${API}/builds/${buildId}/remediation`),
+            axios.get(`${API}/builds/${buildId}/check-updates`)
+          ];
+          
+          // Add signature fetch if build is signed
+          if (buildRes.data.is_signed) {
+            promises.push(axios.get(`${API}/builds/${buildId}/signature`));
+          }
+          
+          const responses = await Promise.all(promises);
+          setScanResults(responses[0].data);
+          setComplianceReport(responses[1].data);
+          setSbom(responses[2].data);
+          setHealthScore(responses[3].data);
+          setRemediationSuggestions(responses[4].data);
+          setUpdateInfo(responses[5].data);
+          
+          if (buildRes.data.is_signed && responses[6]) {
+            setSignature(responses[6].data);
+          }
         } catch (err) {
           console.error('Error fetching additional data:', err);
         }
@@ -129,8 +144,26 @@ export const BuildDetail = () => {
           <div className="flex items-center gap-4">
             {getStatusIcon(build.status)}
             <div>
-              <h2 className="text-4xl font-bold tracking-tighter" style={{fontFamily: 'Chivo'}}>{build.config_name}</h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-4xl font-bold tracking-tighter" style={{fontFamily: 'Chivo'}}>{build.config_name}</h2>
+                {build.is_signed && signature && (
+                  <span className="text-xs px-2 py-1 bg-[#34C759]/10 text-[#34C759] border border-[#34C759]/20 rounded-sm font-medium" title="Image is cryptographically signed">
+                    🔐 SIGNED
+                  </span>
+                )}
+                {build.architecture && build.architecture.length > 1 && (
+                  <span className="text-xs px-2 py-1 bg-[#002FA7]/10 text-[#002FA7] border border-[#002FA7]/20 rounded-sm font-medium">
+                    MULTI-ARCH
+                  </span>
+                )}
+              </div>
               <p className="text-sm text-[#4B5563] mt-1">{build.image_tag || 'Building...'}</p>
+              {updateInfo && updateInfo.update_info.has_updates && (
+                <div className="mt-2 flex items-center gap-2 text-xs">
+                  <Warning size={14} className="text-[#FFCC00]" />
+                  <span className="text-[#FFCC00]">Updates available - {updateInfo.recommendation.message}</span>
+                </div>
+              )}
             </div>
           </div>
           <div className="text-right">

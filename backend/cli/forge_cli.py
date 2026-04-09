@@ -315,5 +315,168 @@ def add_registry(name, type, url, username, password):
         click.echo(f"❌ Error: {str(e)}", err=True)
         exit(1)
 
+# Phase 3 Commands
+@cli.group()
+def policy():
+    """Manage security policies"""
+    pass
+
+@policy.command('list')
+def list_policies():
+    """List all policies"""
+    try:
+        response = requests.get(f"{API_URL}/policies")
+        response.raise_for_status()
+        
+        policies = response.json()
+        
+        if not policies:
+            click.echo("No policies configured.")
+            return
+        
+        click.echo(f"\n📋 Security Policies\n")
+        click.echo(f"{'Name':<30} {'Type':<15} {'Enforcement':<12} {'Enabled':<8}")
+        click.echo("-" * 70)
+        
+        for pol in policies:
+            enabled = "✓" if pol['enabled'] else "✗"
+            click.echo(f"{pol['name']:<30} {pol['type']:<15} {pol['enforcement']:<12} {enabled:<8}")
+            
+    except requests.exceptions.RequestException as e:
+        click.echo(f"❌ Error: {str(e)}", err=True)
+        exit(1)
+
+@policy.command('templates')
+def policy_templates():
+    """View available policy templates"""
+    try:
+        response = requests.get(f"{API_URL}/policies/templates")
+        response.raise_for_status()
+        
+        templates = response.json()['templates']
+        
+        click.echo(f"\n📚 Available Policy Templates\n")
+        
+        for key, template in templates.items():
+            click.echo(f"Template: {key}")
+            click.echo(f"  Name: {template['name']}")
+            click.echo(f"  Type: {template['type']}")
+            click.echo(f"  Enforcement: {template['enforcement']}")
+            click.echo(f"  Description: {template['description']}\n")
+            
+    except requests.exceptions.RequestException as e:
+        click.echo(f"❌ Error: {str(e)}", err=True)
+        exit(1)
+
+@policy.command('evaluate')
+@click.argument('build_id')
+def evaluate_policies(build_id):
+    """Evaluate all policies against a build"""
+    try:
+        response = requests.post(f"{API_URL}/builds/{build_id}/evaluate-policies")
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        click.echo(f"\n🔍 Policy Evaluation Results\n")
+        click.echo(f"Build ID: {build_id}")
+        click.echo(f"Total Policies: {result['total_policies']}")
+        click.echo(f"Passed: {result['passed']}")
+        click.echo(f"Failed: {result['failed']}")
+        click.echo(f"Overall Status: {result['overall_status'].upper()}\n")
+        
+        if result.get('blocks'):
+            click.echo("❌ BLOCKING Issues:")
+            for block in result['blocks']:
+                click.echo(f"  - {block['message']}")
+            click.echo()
+        
+        if result.get('warnings'):
+            click.echo("⚠️  Warnings:")
+            for warn in result['warnings']:
+                click.echo(f"  - {warn['message']}")
+            
+    except requests.exceptions.RequestException as e:
+        click.echo(f"❌ Error: {str(e)}", err=True)
+        exit(1)
+
+@cli.command()
+@click.argument('build_id')
+def updates(build_id):
+    """Check for base image and runtime updates"""
+    try:
+        response = requests.get(f"{API_URL}/builds/{build_id}/check-updates")
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        click.echo(f"\n🔄 Update Check Results\n")
+        click.echo(f"Build ID: {build_id}")
+        
+        if not data['update_info']['has_updates']:
+            click.echo("\n✅ No updates available - image is current!")
+            return
+        
+        click.echo(f"\nBase Image Updates:")
+        base = data['update_info']['base_image_updates']
+        click.echo(f"  Current: {base['current']}")
+        click.echo(f"  Latest: {base['latest']}")
+        click.echo(f"  EOL Date: {base.get('eol_date', 'N/A')}")
+        
+        click.echo(f"\nRuntime Updates:")
+        runtime = data['update_info']['runtime_updates']
+        click.echo(f"  Current: {runtime['current']}")
+        click.echo(f"  Latest: {runtime['latest']}")
+        click.echo(f"  LTS Versions: {', '.join(runtime['lts_versions'])}")
+        
+        click.echo(f"\nRecommendation:")
+        rec = data['recommendation']
+        click.echo(f"  Action: {rec['action'].upper()}")
+        click.echo(f"  Priority: {rec['priority']}")
+        click.echo(f"  Message: {rec['message']}")
+        
+        if data.get('cves_fixed_by_update'):
+            click.echo(f"\nCVEs Fixed by Update:")
+            for cve in data['cves_fixed_by_update']:
+                click.echo(f"  - {cve['id']} ({cve['severity']}): {cve['description']}")
+        
+    except requests.exceptions.RequestException as e:
+        click.echo(f"❌ Error: {str(e)}", err=True)
+        exit(1)
+
+@cli.command()
+@click.argument('build_id')
+def verify(build_id):
+    """Verify image signature"""
+    try:
+        response = requests.get(f"{API_URL}/builds/{build_id}/signature")
+        response.raise_for_status()
+        
+        data = response.json()
+        sig = data['signature']
+        ver = data['verification']
+        
+        click.echo(f"\n🔐 Image Signature Verification\n")
+        click.echo(f"Build ID: {build_id}")
+        click.echo(f"Image: {sig['image_tag']}")
+        click.echo(f"Digest: {sig['digest']}")
+        click.echo(f"Signature ID: {sig['signature_id']}")
+        click.echo(f"Signed At: {sig['signed_at']}")
+        click.echo(f"Signing Method: {sig['signing_method']}")
+        
+        click.echo(f"\nVerification Status:")
+        if ver['verified']:
+            click.echo(f"  ✅ Signature VALID")
+            click.echo(f"  Trust Root: {ver['trust_root']}")
+            click.echo(f"  Rekor Verified: {'✓' if ver['rekor_verified'] else '✗'}")
+            click.echo(f"  Certificate Verified: {'✓' if ver['certificate_verified'] else '✗'}")
+        else:
+            click.echo(f"  ❌ Signature INVALID")
+            click.echo(f"  Error: {ver.get('error', 'Unknown error')}")
+        
+    except requests.exceptions.RequestException as e:
+        click.echo(f"❌ Error: {str(e)}", err=True)
+        exit(1)
+
 if __name__ == '__main__':
     cli()
