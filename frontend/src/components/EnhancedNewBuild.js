@@ -278,7 +278,7 @@ export const EnhancedNewBuild = () => {
                 >
                   {Object.entries(getAvailableVersions()).map(([ver, data]) => (
                     <option key={ver} value={ver}>
-                      {ver} {data.lts ? '(LTS)' : ''} {data.recommended ? '⭐' : ''}
+                      {ver} {data.lts ? '(LTS)' : ''} {data.recommended ? '*' : ''}
                     </option>
                   ))}
                 </select>
@@ -361,7 +361,7 @@ export const EnhancedNewBuild = () => {
               <option value="">Auto-select recommended tag</option>
               {Object.entries(getAvailableTags()).map(([tag, data]) => (
                 <option key={tag} value={tag}>
-                  {tag} {data.security_status === 'latest' && '⭐'} ({data.security_status})
+                  {tag} {data.security_status === 'latest' ? '* ' : ''}({data.security_status})
                 </option>
               ))}
             </select>
