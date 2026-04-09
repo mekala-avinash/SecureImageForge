@@ -33,6 +33,16 @@ from services.vex_generator import generate_vex_document, VEXStatus
 from services.evergreen_pipeline import EvergreenPipeline, get_evergreen_stats
 from services.lifecycle_manager import LifecycleManager, DeprecationPolicy, ImageLifecycleStage, run_garbage_collection
 from services.webhook_manager import WebhookManager, WebhookConfig, WebhookEventType, WebhookDestination
+# Import Vulnerability Remediation service
+from services.vulnerability_remediation import (
+    analyze_vulnerabilities,
+    generate_remediated_dockerfile,
+    create_remediation_record,
+    simulate_delta_scan,
+    get_remediation_status,
+    CVE_REMEDIATION_DATABASE,
+    RemediationStatus
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -366,22 +376,56 @@ def generate_dockerfile(runtime: str, base_image: str, config: BuildConfigCreate
 
 def simulate_vulnerability_scan(image_tag: str) -> Dict[str, Any]:
     """Simulate vulnerability scanning (Trivy would be used in production)"""
-    # For demo purposes, return simulated results
+    # For demo purposes, return simulated results with some real CVEs from our database
     import random
+    
+    # Real CVEs from our remediation database
+    KNOWN_CVES = {
+        "CRITICAL": [
+            {"id": "CVE-2021-44228", "package": "log4j-core", "description": "Apache Log4j2 Remote Code Execution (Log4Shell)"},
+            {"id": "CVE-2022-22965", "package": "spring-beans", "description": "Spring Framework RCE via Data Binding (Spring4Shell)"},
+            {"id": "CVE-2022-42889", "package": "commons-text", "description": "Apache Commons Text RCE via StringSubstitutor"}
+        ],
+        "HIGH": [
+            {"id": "CVE-2023-38545", "package": "curl", "description": "curl SOCKS5 heap buffer overflow"},
+            {"id": "CVE-2023-4911", "package": "glibc", "description": "glibc buffer overflow in ld.so"},
+            {"id": "CVE-2023-32002", "package": "nodejs", "description": "Node.js experimental permission model bypass"},
+            {"id": "CVE-2023-34035", "package": "spring-security", "description": "Spring Security authorization rule bypass"},
+            {"id": "CVE-2023-39325", "package": "golang", "description": "Go net/http HTTP/2 rapid reset attack"}
+        ],
+        "MEDIUM": [
+            {"id": "CVE-2023-5678", "package": "openssl", "description": "OpenSSL Excessive time spent checking DH keys"},
+            {"id": "CVE-2023-45143", "package": "undici", "description": "undici CRLF injection in request headers"}
+        ],
+        "LOW": []
+    }
     
     vuln_types = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
     vulnerabilities = {}
     
     for vtype in vuln_types:
-        count = random.randint(0, 3) if vtype in ['CRITICAL', 'HIGH'] else random.randint(0, 10)
-        vulnerabilities[vtype] = []
-        for i in range(count):
-            vulnerabilities[vtype].append({
+        # Mix known CVEs with random ones
+        known = KNOWN_CVES.get(vtype, [])
+        selected_known = random.sample(known, min(len(known), random.randint(1, len(known)))) if known else []
+        
+        # Add some random unknown CVEs too
+        random_count = random.randint(0, 2) if vtype in ['CRITICAL', 'HIGH'] else random.randint(1, 5)
+        random_vulns = [
+            {
                 "id": f"CVE-2024-{random.randint(10000, 99999)}",
                 "package": f"pkg-{random.choice(['openssl', 'libcurl', 'zlib', 'glibc'])}",
                 "severity": vtype,
                 "description": f"Sample {vtype.lower()} vulnerability in base image"
-            })
+            }
+            for _ in range(random_count)
+        ]
+        
+        # Combine known and random
+        all_vulns = selected_known + random_vulns
+        for v in all_vulns:
+            v["severity"] = vtype
+        
+        vulnerabilities[vtype] = all_vulns
     
     total_count = {k: len(v) for k, v in vulnerabilities.items()}
     
@@ -1348,6 +1392,266 @@ async def get_sbom_format_options():
         "formats": SBOM_FORMATS,
         "scan_depths": SBOM_SCAN_DEPTHS
     }
+
+# =============================================================================
+# VULNERABILITY REMEDIATION ENDPOINTS (Phase 5 - Auto-Remediation)
+# =============================================================================
+
+@api_router.get("/builds/{build_id}/vulnerabilities/analysis")
+async def get_vulnerability_analysis(build_id: str):
+    """Get detailed vulnerability analysis with remediation status for each CVE"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    # Get scan results
+    scan = await db.scan_results.find_one({"build_id": build_id}, {"_id": 0})
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan results not found")
+    
+    # Get build config for base image info
+    config = await db.build_configs.find_one({"id": build.get("config_id")}, {"_id": 0})
+    base_image = config.get("base_image", "alpine") if config else "alpine"
+    
+    # Analyze vulnerabilities
+    analysis = analyze_vulnerabilities(scan.get("vulnerabilities", {}), base_image)
+    
+    return {
+        "build_id": build_id,
+        "build_name": build.get("config_name"),
+        "base_image": base_image,
+        "analysis": analysis
+    }
+
+
+@api_router.post("/builds/{build_id}/remediate")
+async def trigger_auto_remediation(build_id: str, cve_ids: List[str] = None):
+    """Trigger automatic remediation for all or specific CVEs"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    # Get scan results
+    scan = await db.scan_results.find_one({"build_id": build_id}, {"_id": 0})
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan results not found")
+    
+    # Get build config
+    config = await db.build_configs.find_one({"id": build.get("config_id")}, {"_id": 0})
+    if not config:
+        raise HTTPException(status_code=404, detail="Build config not found")
+    
+    base_image = config.get("base_image", "alpine")
+    runtime = config.get("runtime", "java")
+    
+    # Analyze vulnerabilities
+    analysis = analyze_vulnerabilities(scan.get("vulnerabilities", {}), base_image)
+    
+    # Filter to specific CVEs if provided
+    if cve_ids:
+        analysis["vulnerabilities_with_remediation"] = [
+            v for v in analysis["vulnerabilities_with_remediation"]
+            if v.get("id") in cve_ids
+        ]
+        analysis["generated_dockerfile_fixes"] = [
+            f for f in analysis["generated_dockerfile_fixes"]
+            if f.get("cve_id") in cve_ids
+        ]
+    
+    # Generate remediated Dockerfile
+    original_dockerfile = f"FROM {base_image}\n# Original application layers..."
+    remediated = generate_remediated_dockerfile(
+        original_dockerfile,
+        analysis,
+        base_image,
+        runtime
+    )
+    
+    # Create remediation record
+    remediation_id = str(uuid.uuid4())
+    remediation_record = {
+        "id": remediation_id,
+        "build_id": build_id,
+        "build_name": build.get("config_name"),
+        "status": "completed",
+        "original_vulnerability_count": scan.get("total_count", {}),
+        "remediated_dockerfile": remediated["dockerfile"],
+        "applied_fixes": remediated["applied_fixes"],
+        "fixes_count": remediated["fixes_applied_count"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "audit_trail": []
+    }
+    
+    # Add audit entries
+    for fix in remediated["applied_fixes"]:
+        audit_entry = create_remediation_record(
+            build_id=build_id,
+            cve_id=fix.get("cve_id", "UNKNOWN"),
+            action="auto_remediate",
+            status="applied",
+            details=fix
+        )
+        remediation_record["audit_trail"].append(audit_entry)
+    
+    # Store remediation record
+    await db.remediation_records.insert_one(remediation_record)
+    
+    # Simulate delta scan
+    delta_scan = simulate_delta_scan(
+        scan.get("total_count", {}),
+        remediated["applied_fixes"]
+    )
+    
+    return {
+        "remediation_id": remediation_id,
+        "build_id": build_id,
+        "status": "completed",
+        "dockerfile": remediated["dockerfile"],
+        "applied_fixes": remediated["applied_fixes"],
+        "fixes_count": remediated["fixes_applied_count"],
+        "delta_scan": delta_scan,
+        "message": f"Successfully generated remediated Dockerfile with {remediated['fixes_applied_count']} fixes applied."
+    }
+
+
+@api_router.post("/builds/{build_id}/remediate/{cve_id}")
+async def remediate_single_cve(build_id: str, cve_id: str):
+    """Trigger remediation for a single CVE"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    # Get remediation status for this CVE
+    remediation_info = get_remediation_status(cve_id)
+    
+    if remediation_info["status"] == RemediationStatus.NO_FIX:
+        raise HTTPException(status_code=400, detail=f"No fix available for {cve_id}")
+    
+    if not remediation_info["auto_fixable"]:
+        return {
+            "cve_id": cve_id,
+            "status": "manual_required",
+            "message": "This CVE requires manual intervention",
+            "remediation_info": remediation_info
+        }
+    
+    # Get config for base image
+    config = await db.build_configs.find_one({"id": build.get("config_id")}, {"_id": 0})
+    base_image = config.get("base_image", "alpine") if config else "alpine"
+    base_type = "alpine" if "alpine" in base_image.lower() else "debian"
+    
+    # Get the fix command
+    fix_command = None
+    if remediation_info["fix_commands"]:
+        if base_type in remediation_info["fix_commands"]:
+            fix_command = remediation_info["fix_commands"][base_type]
+        elif "docker" in remediation_info["fix_commands"]:
+            fix_command = remediation_info["fix_commands"]["docker"]
+    
+    # Create audit record
+    audit_entry = create_remediation_record(
+        build_id=build_id,
+        cve_id=cve_id,
+        action="single_cve_remediate",
+        status="fix_generated",
+        details={
+            "fix_command": fix_command,
+            "fixed_version": remediation_info["fixed_version"],
+            "remediation_type": remediation_info["remediation_type"]
+        }
+    )
+    
+    # Store audit record
+    await db.remediation_audit.insert_one(audit_entry)
+    
+    return {
+        "cve_id": cve_id,
+        "status": "fix_generated",
+        "fix_command": fix_command,
+        "fixed_version": remediation_info["fixed_version"],
+        "remediation_type": remediation_info["remediation_type"],
+        "breaking_changes": remediation_info["breaking_changes"],
+        "message": f"Fix generated for {cve_id}. Apply the command to your Dockerfile.",
+        "audit_id": audit_entry["id"]
+    }
+
+
+@api_router.get("/builds/{build_id}/remediation-history")
+async def get_remediation_history(build_id: str):
+    """Get remediation audit trail for a build"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    # Get all remediation records
+    records = await db.remediation_records.find(
+        {"build_id": build_id},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+    
+    # Get audit entries
+    audit_entries = await db.remediation_audit.find(
+        {"build_id": build_id},
+        {"_id": 0}
+    ).sort("timestamp", -1).to_list(100)
+    
+    return {
+        "build_id": build_id,
+        "remediation_records": records,
+        "audit_trail": audit_entries,
+        "total_remediations": len(records),
+        "total_audit_entries": len(audit_entries)
+    }
+
+
+@api_router.get("/remediation/cve-database")
+async def get_cve_database():
+    """Get the list of known CVEs with automated fixes"""
+    cve_list = []
+    for cve_id, info in CVE_REMEDIATION_DATABASE.items():
+        cve_list.append({
+            "cve_id": cve_id,
+            "severity": info["severity"],
+            "package": info["package"],
+            "fixed_version": info["fixed_version"],
+            "auto_fixable": info["auto_fixable"],
+            "remediation_type": info["remediation_type"],
+            "description": info["description"],
+            "breaking_changes": info.get("breaking_changes", False)
+        })
+    
+    return {
+        "total_cves": len(cve_list),
+        "auto_fixable_count": sum(1 for c in cve_list if c["auto_fixable"]),
+        "cves": sorted(cve_list, key=lambda x: (
+            {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}.get(x["severity"], 4),
+            x["cve_id"]
+        ))
+    }
+
+
+@api_router.get("/remediation/stats")
+async def get_remediation_stats():
+    """Get overall remediation statistics"""
+    total_remediations = await db.remediation_records.count_documents({})
+    total_fixes = 0
+    
+    async for record in db.remediation_records.find({}, {"fixes_count": 1}):
+        total_fixes += record.get("fixes_count", 0)
+    
+    return {
+        "total_remediations_performed": total_remediations,
+        "total_fixes_applied": total_fixes,
+        "cve_database_size": len(CVE_REMEDIATION_DATABASE),
+        "auto_fixable_cves": sum(1 for c in CVE_REMEDIATION_DATABASE.values() if c["auto_fixable"]),
+        "supported_remediation_types": [
+            "os_package_upgrade",
+            "base_image_upgrade",
+            "dependency_upgrade",
+            "configuration"
+        ]
+    }
+
 
 # Include the router in the main app
 app.include_router(api_router)
