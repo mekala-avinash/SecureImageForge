@@ -9,7 +9,7 @@ import os
 from typing import List
 
 # Use environment variable or default to external URL
-API_URL = os.environ.get('FORGE_API_URL', 'https://docker-vault.preview.emergentagent.com/api')
+API_URL = os.environ.get('FORGE_API_URL', 'https://runtime-guardian-io.preview.emergentagent.com/api')
 
 @click.group()
 @click.version_option(version='1.0.0')

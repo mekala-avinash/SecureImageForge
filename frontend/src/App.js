@@ -18,6 +18,7 @@ import { BuildDetail } from './components/BuildDetail';
 import { BuildsList } from './components/BuildsList';
 import { Analytics } from './components/Analytics';
 import { Policies } from './components/Policies';
+import { EnhancedNewBuild } from './components/EnhancedNewBuild';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -479,7 +480,7 @@ export default function App() {
         <Header />
         <Routes>
           <Route path="/" element={<Dashboard />} />
-          <Route path="/new" element={<NewBuild />} />
+          <Route path="/new" element={<EnhancedNewBuild />} />
           <Route path="/builds" element={<BuildsList />} />
           <Route path="/builds/:buildId" element={<BuildDetail />} />
           <Route path="/analytics" element={<Analytics />} />

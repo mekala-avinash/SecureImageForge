@@ -86,6 +86,17 @@ class BuildConfigCreate(BaseModel):
     enable_sbom: bool = True
     enable_signing: bool = True
     architecture: List[str] = Field(default_factory=lambda: ["amd64"])  # Phase 3: Multi-arch support
+    # Phase 4.5: Granular Controls
+    runtime_version: Optional[str] = None  # e.g., "17", "8.0", "1.22"
+    runtime_distribution: Optional[str] = None  # e.g., "temurin", "corretto", "microsoft"
+    base_image_tag: Optional[str] = None  # e.g., "3.19.1", "12-slim"
+    binary_whitelist: List[str] = Field(default_factory=list)  # Binaries to keep (e.g., ["/usr/bin/curl"])
+    env_sanitization_rules: List[str] = Field(default_factory=list)  # Env vars to strip/mask
+    cis_level: int = 1  # 1 or 2
+    fips_mode_enabled: bool = False
+    custom_labels: Dict[str, str] = Field(default_factory=dict)  # Docker labels
+    sbom_format: str = "cyclonedx"  # cyclonedx or spdx
+    sbom_scan_depth: str = "os_and_runtime"  # os_only, os_and_runtime, full
 
 class BuildHistory(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -1272,6 +1283,70 @@ async def get_supported_architectures():
         "supported": ["amd64", "arm64"],
         "default": "amd64",
         "multi_arch_builds": True
+    }
+
+# ============ PHASE 4.5 GRANULAR CONTROLS ============
+
+@api_router.get("/runtime-versions")
+async def get_runtime_version_matrix():
+    """Get complete runtime version and distribution matrix"""
+    from services.version_matrix import RUNTIME_VERSIONS
+    return {"runtimes": RUNTIME_VERSIONS}
+
+@api_router.get("/runtime-versions/{runtime}")
+async def get_runtime_specific_versions(runtime: str):
+    """Get versions and distributions for a specific runtime"""
+    from services.version_matrix import get_runtime_versions
+    data = get_runtime_versions(runtime)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Runtime {runtime} not found")
+    return data
+
+@api_router.get("/base-image-tags")
+async def get_base_image_tag_catalog():
+    """Get available tags for base images"""
+    from services.version_matrix import BASE_IMAGE_TAGS
+    return {"base_images": BASE_IMAGE_TAGS}
+
+@api_router.get("/base-image-tags/{base_image}")
+async def get_specific_base_tags(base_image: str):
+    """Get tags for a specific base image"""
+    from services.version_matrix import BASE_IMAGE_TAGS
+    data = BASE_IMAGE_TAGS.get(base_image)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Base image {base_image} not found")
+    return data
+
+@api_router.post("/validate-runtime-config")
+async def validate_runtime_configuration(config: Dict[str, Any]):
+    """Validate runtime configuration for compatibility"""
+    from services.version_matrix import validate_runtime_config
+    
+    runtime = config.get("runtime")
+    version = config.get("runtime_version")
+    distribution = config.get("runtime_distribution")
+    fips_mode = config.get("fips_mode_enabled", False)
+    
+    if not all([runtime, version, distribution]):
+        raise HTTPException(status_code=400, detail="Missing required fields: runtime, runtime_version, runtime_distribution")
+    
+    validation = validate_runtime_config(runtime, version, distribution, fips_mode)
+    
+    return validation
+
+@api_router.get("/cis-levels")
+async def get_cis_benchmark_levels():
+    """Get CIS Benchmark level configurations"""
+    from services.version_matrix import CIS_LEVELS
+    return {"levels": CIS_LEVELS}
+
+@api_router.get("/sbom-formats")
+async def get_sbom_format_options():
+    """Get SBOM format and scan depth options"""
+    from services.version_matrix import SBOM_FORMATS, SBOM_SCAN_DEPTHS
+    return {
+        "formats": SBOM_FORMATS,
+        "scan_depths": SBOM_SCAN_DEPTHS
     }
 
 # Include the router in the main app

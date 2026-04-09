@@ -11,7 +11,7 @@ import json
 from datetime import datetime
 
 class SecureImageForgeAPITester:
-    def __init__(self, base_url="https://docker-vault.preview.emergentagent.com"):
+    def __init__(self, base_url="https://runtime-guardian-io.preview.emergentagent.com"):
         self.base_url = base_url
         self.api_url = f"{base_url}/api"
         self.tests_run = 0
