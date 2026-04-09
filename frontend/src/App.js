@@ -16,6 +16,7 @@ import {
 } from '@phosphor-icons/react';
 import { BuildDetail } from './components/BuildDetail';
 import { BuildsList } from './components/BuildsList';
+import { Analytics } from './components/Analytics';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -47,6 +48,13 @@ const Header = () => {
             data-testid="nav-builds"
           >
             Builds
+          </Link>
+          <Link 
+            to="/analytics" 
+            className="text-sm font-medium hover:text-[#002FA7] transition-colors"
+            data-testid="nav-analytics"
+          >
+            Analytics
           </Link>
           <Link 
             to="/new" 
@@ -282,8 +290,8 @@ const NewBuild = () => {
           <label className="block text-sm uppercase tracking-wider font-medium mb-2">
             Runtime Environment
           </label>
-          <div className="grid grid-cols-2 gap-3">
-            {['java', 'dotnet'].map((runtime) => (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {['java', 'dotnet', 'go', 'nodejs'].map((runtime) => (
               <button
                 key={runtime}
                 type="button"
@@ -428,6 +436,7 @@ export default function App() {
           <Route path="/new" element={<NewBuild />} />
           <Route path="/builds" element={<BuildsList />} />
           <Route path="/builds/:buildId" element={<BuildDetail />} />
+          <Route path="/analytics" element={<Analytics />} />
         </Routes>
       </BrowserRouter>
     </div>

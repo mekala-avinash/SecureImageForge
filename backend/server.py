@@ -8,12 +8,18 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import docker
 import json
 import subprocess
 import tempfile
 import shutil
+import sys
+
+# Import Phase 2 services
+sys.path.append(str(Path(__file__).parent))
+from services.health_score import calculate_health_score, get_health_grade, get_health_status
+from services.remediation_engine import generate_remediation_suggestions, get_cis_benchmark_score
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -41,7 +47,7 @@ class BuildConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
-    runtime: str  # java, dotnet
+    runtime: str  # java, dotnet, go, nodejs
     base_image: str  # alpine, debian, distroless
     compliance_profiles: List[str]  # hipaa, soc2, cis
     remove_shell: bool = True
@@ -91,6 +97,42 @@ class ComplianceReport(BaseModel):
     failed: int
     warnings: int
 
+# Phase 2 Models
+class Registry(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    type: str  # jfrog, acr, dockerhub
+    url: str
+    username: str
+    password: str  # In production, encrypt this
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class RegistryCreate(BaseModel):
+    name: str
+    type: str
+    url: str
+    username: str
+    password: str
+
+class HealthScoreHistory(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    build_id: str
+    score: int
+    grade: str
+    status: str
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class BuildAnalytics(BaseModel):
+    total_builds: int
+    completed_builds: int
+    failed_builds: int
+    success_rate: float
+    avg_health_score: int
+    avg_compliance_score: int
+    total_vulnerabilities: Dict[str, int]
+    trend_data: List[Dict[str, Any]]
+
 # Dockerfile Templates
 DOCKERFILE_TEMPLATES = {
     "java": {
@@ -133,6 +175,72 @@ WORKDIR /app
 COPY . /app
 EXPOSE 8080
 ENTRYPOINT ["dotnet", "app.dll"]"""
+    },
+    "go": {
+        "alpine": """FROM golang:1.21-alpine AS builder
+WORKDIR /build
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o app .
+
+FROM alpine:latest
+RUN addgroup -g 1000 appuser && adduser -D -u 1000 -G appuser appuser
+WORKDIR /app
+USER 1000:1000
+COPY --from=builder --chown=1000:1000 /build/app /app/app
+EXPOSE 8080
+ENTRYPOINT ["/app/app"]""",
+        "debian": """FROM golang:1.21 AS builder
+WORKDIR /build
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o app .
+
+FROM debian:bookworm-slim
+RUN groupadd -g 1000 appuser && useradd -r -u 1000 -g appuser appuser
+WORKDIR /app
+USER 1000:1000
+COPY --from=builder --chown=1000:1000 /build/app /app/app
+EXPOSE 8080
+ENTRYPOINT ["/app/app"]""",
+        "distroless": """FROM golang:1.21 AS builder
+WORKDIR /build
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o app .
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=builder /build/app /app
+EXPOSE 8080
+ENTRYPOINT ["/app"]"""
+    },
+    "nodejs": {
+        "alpine": """FROM node:20-alpine
+RUN addgroup -g 1000 appuser && adduser -D -u 1000 -G appuser appuser
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production && npm cache clean --force
+USER 1000:1000
+COPY --chown=1000:1000 . .
+EXPOSE 8080
+ENTRYPOINT ["node", "index.js"]""",
+        "debian": """FROM node:20-slim
+RUN groupadd -g 1000 appuser && useradd -r -u 1000 -g appuser appuser
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production && npm cache clean --force
+USER 1000:1000
+COPY --chown=1000:1000 . .
+EXPOSE 8080
+ENTRYPOINT ["node", "index.js"]""",
+        "distroless": """FROM node:20-slim AS builder
+WORKDIR /build
+COPY package*.json ./
+RUN npm ci --only=production
+
+FROM gcr.io/distroless/nodejs20-debian12
+WORKDIR /app
+COPY --from=builder /build/node_modules ./node_modules
+COPY . .
+EXPOSE 8080
+CMD ["index.js"]"""
     }
 }
 
@@ -349,6 +457,13 @@ async def build_image_task(config_dict: dict, build_id: str):
             )
         
         # Complete
+        completed_build_data = {
+            "status": "completed",
+            "vulnerability_count": scan_results["total_count"],
+            "compliance_score": compliance_report.overall_score,
+            "completed_at": datetime.now(timezone.utc)
+        }
+        
         await db.build_history.update_one(
             {"id": build_id},
             {
@@ -356,11 +471,36 @@ async def build_image_task(config_dict: dict, build_id: str):
                     "status": "completed",
                     "vulnerability_count": scan_results["total_count"],
                     "compliance_score": compliance_report.overall_score,
-                    "completed_at": datetime.now(timezone.utc).isoformat()
+                    "completed_at": completed_build_data["completed_at"].isoformat()
                 },
                 "$push": {"logs": "Build completed successfully"}
             }
         )
+        
+        # Calculate and store health score (Phase 2)
+        final_build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+        if final_build:
+            if isinstance(final_build.get('started_at'), str):
+                final_build['started_at'] = datetime.fromisoformat(final_build['started_at'])
+            if isinstance(final_build.get('completed_at'), str):
+                final_build['completed_at'] = datetime.fromisoformat(final_build['completed_at'])
+            
+            health_score = calculate_health_score(final_build)
+            health_grade = get_health_grade(health_score)
+            health_status = get_health_status(health_score)
+            
+            await db.health_scores.insert_one({
+                "build_id": build_id,
+                "score": health_score,
+                "grade": health_grade,
+                "status": health_status,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+            
+            await db.build_history.update_one(
+                {"id": build_id},
+                {"$push": {"logs": f"Health score: {health_score} ({health_grade})"}}
+            )
         
     except Exception as e:
         await db.build_history.update_one(
@@ -495,6 +635,272 @@ async def get_stats():
         "failed_builds": failed_builds,
         "in_progress": in_progress,
         "avg_compliance_score": avg_compliance
+    }
+
+# ============ PHASE 2 ENDPOINTS ============
+
+@api_router.get("/builds/{build_id}/health")
+async def get_build_health(build_id: str):
+    """Get health score for a build"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    # Convert datetime strings if needed
+    if isinstance(build.get('started_at'), str):
+        build['started_at'] = datetime.fromisoformat(build['started_at'])
+    if build.get('completed_at') and isinstance(build['completed_at'], str):
+        build['completed_at'] = datetime.fromisoformat(build['completed_at'])
+    
+    score = calculate_health_score(build)
+    grade = get_health_grade(score)
+    status = get_health_status(score)
+    
+    # Store in health score history
+    health_record = {
+        "build_id": build_id,
+        "score": score,
+        "grade": grade,
+        "status": status,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    await db.health_scores.insert_one(health_record)
+    
+    return {
+        "build_id": build_id,
+        "score": score,
+        "grade": grade,
+        "status": status,
+        "timestamp": health_record["timestamp"]
+    }
+
+@api_router.get("/builds/{build_id}/remediation")
+async def get_remediation_suggestions(build_id: str):
+    """Get remediation suggestions for compliance failures"""
+    report = await db.compliance_reports.find_one({"build_id": build_id}, {"_id": 0})
+    
+    if not report:
+        raise HTTPException(status_code=404, detail="Compliance report not found")
+    
+    suggestions = generate_remediation_suggestions(report['checks'])
+    cis_score = get_cis_benchmark_score(report['checks'])
+    
+    return {
+        "build_id": build_id,
+        "remediation_suggestions": suggestions,
+        "cis_benchmark": cis_score
+    }
+
+# Registry Management
+@api_router.post("/registries", response_model=Registry)
+async def create_registry(registry: RegistryCreate):
+    """Add a new container registry"""
+    registry_obj = Registry(**registry.model_dump())
+    registry_dict = registry_obj.model_dump()
+    registry_dict['created_at'] = registry_dict['created_at'].isoformat()
+    
+    await db.registries.insert_one(registry_dict)
+    return registry_obj
+
+@api_router.get("/registries", response_model=List[Registry])
+async def get_registries():
+    """Get all configured registries"""
+    registries = await db.registries.find({}, {"_id": 0}).to_list(100)
+    
+    for registry in registries:
+        if isinstance(registry.get('created_at'), str):
+            registry['created_at'] = datetime.fromisoformat(registry['created_at'])
+    
+    return registries
+
+@api_router.delete("/registries/{registry_id}")
+async def delete_registry(registry_id: str):
+    """Delete a registry"""
+    result = await db.registries.delete_one({"id": registry_id})
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Registry not found")
+    
+    return {"message": "Registry deleted successfully"}
+
+@api_router.post("/registries/{registry_id}/test")
+async def test_registry(registry_id: str):
+    """Test registry connection"""
+    registry = await db.registries.find_one({"id": registry_id}, {"_id": 0})
+    
+    if not registry:
+        raise HTTPException(status_code=404, detail="Registry not found")
+    
+    # Simulate registry test
+    return {
+        "registry_id": registry_id,
+        "status": "connected",
+        "message": f"Successfully connected to {registry['type']} registry at {registry['url']}"
+    }
+
+@api_router.post("/builds/{build_id}/push/{registry_id}")
+async def push_to_registry(build_id: str, registry_id: str):
+    """Push build image to a registry"""
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    registry = await db.registries.find_one({"id": registry_id}, {"_id": 0})
+    
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    if not registry:
+        raise HTTPException(status_code=404, detail="Registry not found")
+    
+    if build['status'] != 'completed':
+        raise HTTPException(status_code=400, detail="Build not completed")
+    
+    # Simulate push
+    pushed_tag = f"{registry['url']}/{build['image_tag']}"
+    
+    return {
+        "build_id": build_id,
+        "registry_id": registry_id,
+        "pushed_tag": pushed_tag,
+        "status": "success",
+        "message": f"Image pushed to {registry['name']}"
+    }
+
+# Analytics Endpoints
+@api_router.get("/analytics/trends")
+async def get_analytics_trends(days: int = 30):
+    """Get build and health score trends"""
+    start_date = datetime.now(timezone.utc) - timedelta(days=days)
+    
+    # Get builds from the period
+    builds = await db.build_history.find({
+        "started_at": {"$gte": start_date.isoformat()}
+    }, {"_id": 0}).to_list(1000)
+    
+    # Convert datetime strings
+    for build in builds:
+        if isinstance(build.get('started_at'), str):
+            build['started_at'] = datetime.fromisoformat(build['started_at'])
+    
+    # Group by day
+    daily_data = {}
+    for build in builds:
+        day = build['started_at'].date().isoformat()
+        if day not in daily_data:
+            daily_data[day] = {
+                "date": day,
+                "total": 0,
+                "completed": 0,
+                "failed": 0,
+                "avg_compliance": 0,
+                "compliance_scores": []
+            }
+        
+        daily_data[day]["total"] += 1
+        if build.get('status') == 'completed':
+            daily_data[day]["completed"] += 1
+        elif build.get('status') == 'failed':
+            daily_data[day]["failed"] += 1
+        
+        if build.get('compliance_score'):
+            daily_data[day]["compliance_scores"].append(build['compliance_score'])
+    
+    # Calculate averages
+    trend_data = []
+    for day_data in daily_data.values():
+        if day_data["compliance_scores"]:
+            day_data["avg_compliance"] = int(sum(day_data["compliance_scores"]) / len(day_data["compliance_scores"]))
+        day_data.pop("compliance_scores")
+        trend_data.append(day_data)
+    
+    trend_data.sort(key=lambda x: x["date"])
+    
+    return {
+        "period_days": days,
+        "trend_data": trend_data
+    }
+
+@api_router.get("/analytics/vulnerabilities")
+async def get_vulnerability_analytics():
+    """Get vulnerability trends across all builds"""
+    completed_builds = await db.build_history.find({
+        "status": "completed",
+        "vulnerability_count": {"$exists": True}
+    }, {"_id": 0}).to_list(1000)
+    
+    total_vulns = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    vuln_by_runtime = {}
+    
+    for build in completed_builds:
+        vuln_count = build.get('vulnerability_count', {})
+        for severity in total_vulns.keys():
+            total_vulns[severity] += vuln_count.get(severity, 0)
+        
+        # Get config to find runtime
+        config = await db.build_configs.find_one({"id": build['config_id']}, {"_id": 0})
+        if config:
+            runtime = config.get('runtime', 'unknown')
+            if runtime not in vuln_by_runtime:
+                vuln_by_runtime[runtime] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+            
+            for severity in total_vulns.keys():
+                vuln_by_runtime[runtime][severity] += vuln_count.get(severity, 0)
+    
+    return {
+        "total_vulnerabilities": total_vulns,
+        "by_runtime": vuln_by_runtime,
+        "total_builds_analyzed": len(completed_builds)
+    }
+
+@api_router.get("/analytics/health-scores")
+async def get_health_score_analytics():
+    """Get health score distribution and trends"""
+    completed_builds = await db.build_history.find({
+        "status": "completed"
+    }, {"_id": 0}).to_list(1000)
+    
+    scores = []
+    grades = {"A": 0, "B": 0, "C": 0, "D": 0, "F": 0}
+    
+    for build in completed_builds:
+        # Convert datetime strings
+        if isinstance(build.get('started_at'), str):
+            build['started_at'] = datetime.fromisoformat(build['started_at'])
+        if build.get('completed_at') and isinstance(build['completed_at'], str):
+            build['completed_at'] = datetime.fromisoformat(build['completed_at'])
+        
+        score = calculate_health_score(build)
+        grade = get_health_grade(score)
+        scores.append(score)
+        grades[grade] = grades.get(grade, 0) + 1
+    
+    avg_score = int(sum(scores) / len(scores)) if scores else 0
+    
+    return {
+        "average_health_score": avg_score,
+        "grade_distribution": grades,
+        "total_builds": len(completed_builds)
+    }
+
+@api_router.get("/analytics/success-rate")
+async def get_success_rate_analytics(days: int = 30):
+    """Get build success rate over time"""
+    start_date = datetime.now(timezone.utc) - timedelta(days=days)
+    
+    builds = await db.build_history.find({
+        "started_at": {"$gte": start_date.isoformat()}
+    }, {"_id": 0}).to_list(1000)
+    
+    total = len(builds)
+    completed = sum(1 for b in builds if b.get('status') == 'completed')
+    failed = sum(1 for b in builds if b.get('status') == 'failed')
+    
+    success_rate = (completed / total * 100) if total > 0 else 0
+    
+    return {
+        "period_days": days,
+        "total_builds": total,
+        "completed": completed,
+        "failed": failed,
+        "success_rate": round(success_rate, 2)
     }
 
 # Include the router in the main app

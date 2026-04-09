@@ -22,6 +22,8 @@ export const BuildDetail = () => {
   const [scanResults, setScanResults] = useState(null);
   const [complianceReport, setComplianceReport] = useState(null);
   const [sbom, setSbom] = useState(null);
+  const [healthScore, setHealthScore] = useState(null);
+  const [remediationSuggestions, setRemediationSuggestions] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('logs');
 
@@ -43,14 +45,18 @@ export const BuildDetail = () => {
 
       if (buildRes.data.status === 'completed') {
         try {
-          const [scanRes, complianceRes, sbomRes] = await Promise.all([
+          const [scanRes, complianceRes, sbomRes, healthRes, remediationRes] = await Promise.all([
             axios.get(`${API}/builds/${buildId}/scan`),
             axios.get(`${API}/builds/${buildId}/compliance`),
-            axios.get(`${API}/builds/${buildId}/sbom`)
+            axios.get(`${API}/builds/${buildId}/sbom`),
+            axios.get(`${API}/builds/${buildId}/health`),
+            axios.get(`${API}/builds/${buildId}/remediation`)
           ]);
           setScanResults(scanRes.data);
           setComplianceReport(complianceRes.data);
           setSbom(sbomRes.data);
+          setHealthScore(healthRes.data);
+          setRemediationSuggestions(remediationRes.data);
         } catch (err) {
           console.error('Error fetching additional data:', err);
         }
@@ -136,7 +142,21 @@ export const BuildDetail = () => {
 
       {/* Stats Cards */}
       {build.status === 'completed' && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8" data-testid="build-stats">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8" data-testid="build-stats">
+          {healthScore && (
+            <div className="stat-card p-4">
+              <div className="flex items-center gap-3 mb-2">
+                <CheckCircle size={24} weight="bold" className="text-[#34C759]" />
+                <span className="text-xs uppercase tracking-wider text-[#4B5563]">Health Score</span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <div className="text-3xl font-bold" style={{fontFamily: 'Chivo'}}>{healthScore.score}</div>
+                <div className="text-2xl font-bold text-[#4B5563]" style={{fontFamily: 'Chivo'}}>/ 100</div>
+              </div>
+              <div className="mt-2 text-sm font-medium">Grade: {healthScore.grade} - {healthScore.status}</div>
+            </div>
+          )}
+          
           <div className="stat-card p-4">
             <div className="flex items-center gap-3 mb-2">
               <ShieldCheck size={24} weight="bold" className="text-[#002FA7]" />
@@ -169,12 +189,12 @@ export const BuildDetail = () => {
 
       {/* Tabs */}
       <div className="bg-white border border-black/10 rounded-sm overflow-hidden">
-        <div className="border-b border-black/10 flex">
-          {['logs', 'vulnerabilities', 'compliance', 'sbom'].map((tab) => (
+        <div className="border-b border-black/10 flex overflow-x-auto">
+          {['logs', 'vulnerabilities', 'compliance', 'remediation', 'sbom'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`px-6 py-3 text-sm uppercase tracking-wider font-medium transition-colors ${
+              className={`px-6 py-3 text-sm uppercase tracking-wider font-medium transition-colors whitespace-nowrap ${
                 activeTab === tab
                   ? 'bg-[#002FA7] text-white'
                   : 'text-[#4B5563] hover:bg-black/5'
@@ -293,6 +313,91 @@ export const BuildDetail = () => {
               ) : (
                 <div className="text-center py-8 text-[#4B5563]">
                   Compliance report not available yet
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Remediation Tab */}
+          {activeTab === 'remediation' && (
+            <div data-testid="remediation-content">
+              <h3 className="text-xl font-bold mb-4" style={{fontFamily: 'Chivo'}}>Remediation Suggestions</h3>
+              {remediationSuggestions ? (
+                <div>
+                  {/* CIS Benchmark Score */}
+                  {remediationSuggestions.cis_benchmark && (
+                    <div className="mb-6 p-4 border border-black/10 rounded-sm">
+                      <h4 className="font-bold text-lg mb-3" style={{fontFamily: 'Chivo'}}>
+                        CIS Benchmark Score: {remediationSuggestions.cis_benchmark.score}/100 (Grade: {remediationSuggestions.cis_benchmark.grade})
+                      </h4>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div className="text-center p-2 bg-[#34C759]/5 rounded-sm">
+                          <div className="text-xl font-bold text-[#34C759]">{remediationSuggestions.cis_benchmark.passed}</div>
+                          <div className="text-xs uppercase tracking-wider text-[#4B5563]">Passed</div>
+                        </div>
+                        <div className="text-center p-2 bg-[#FF3B30]/5 rounded-sm">
+                          <div className="text-xl font-bold text-[#FF3B30]">{remediationSuggestions.cis_benchmark.failed}</div>
+                          <div className="text-xs uppercase tracking-wider text-[#4B5563]">Failed</div>
+                        </div>
+                        <div className="text-center p-2 bg-[#FFCC00]/5 rounded-sm">
+                          <div className="text-xl font-bold text-[#FFCC00]">{remediationSuggestions.cis_benchmark.warnings}</div>
+                          <div className="text-xs uppercase tracking-wider text-[#4B5563]">Warnings</div>
+                        </div>
+                        <div className="text-center p-2 bg-black/5 rounded-sm">
+                          <div className="text-xl font-bold">{remediationSuggestions.cis_benchmark.total_checks}</div>
+                          <div className="text-xs uppercase tracking-wider text-[#4B5563]">Total</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Remediation Suggestions */}
+                  {remediationSuggestions.remediation_suggestions && remediationSuggestions.remediation_suggestions.length > 0 ? (
+                    <div className="space-y-4">
+                      <h4 className="font-bold text-lg mb-3" style={{fontFamily: 'Chivo'}}>Suggested Actions:</h4>
+                      {remediationSuggestions.remediation_suggestions.map((suggestion, idx) => (
+                        <div key={idx} className="border border-black/10 rounded-sm p-4">
+                          <div className="flex items-start justify-between mb-2">
+                            <h5 className="font-bold text-base" style={{fontFamily: 'Chivo'}}>{suggestion.title}</h5>
+                            <div className="flex gap-2">
+                              <span className={`text-xs px-2 py-1 rounded-sm font-medium ${
+                                suggestion.severity === 'critical' ? 'bg-[#FF3B30]/10 text-[#FF3B30]' :
+                                suggestion.severity === 'high' ? 'bg-[#FFCC00]/10 text-[#FFCC00]' :
+                                'bg-[#002FA7]/10 text-[#002FA7]'
+                              }`}>
+                                {suggestion.severity.toUpperCase()}
+                              </span>
+                              <span className="text-xs px-2 py-1 bg-black/5 rounded-sm font-medium">
+                                Effort: {suggestion.effort}
+                              </span>
+                            </div>
+                          </div>
+                          
+                          <div className="mb-3 text-sm text-[#4B5563]">
+                            <strong>Impact:</strong> {suggestion.impact}
+                          </div>
+                          
+                          <div className="bg-[#0A0A0A] text-[#34C759] p-3 rounded-sm">
+                            <pre className="text-xs font-mono whitespace-pre-wrap">{suggestion.remediation}</pre>
+                          </div>
+                          
+                          <div className="mt-2 text-xs uppercase tracking-wider text-[#4B5563]">
+                            Profile: {suggestion.profile}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 bg-[#34C759]/5 rounded-sm">
+                      <CheckCircle size={48} className="mx-auto mb-3 text-[#34C759]" />
+                      <p className="font-bold text-[#34C759]">No Remediations Needed!</p>
+                      <p className="text-sm text-[#4B5563]">All compliance checks passed successfully.</p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-[#4B5563]">
+                  Remediation suggestions not available yet
                 </div>
               )}
             </div>

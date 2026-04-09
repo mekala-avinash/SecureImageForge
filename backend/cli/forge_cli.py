@@ -19,7 +19,7 @@ def cli():
 
 @cli.command()
 @click.option('--name', required=True, help='Build configuration name')
-@click.option('--runtime', type=click.Choice(['java', 'dotnet']), required=True, help='Runtime environment')
+@click.option('--runtime', type=click.Choice(['java', 'dotnet', 'go', 'nodejs']), required=True, help='Runtime environment')
 @click.option('--base', type=click.Choice(['alpine', 'debian', 'distroless']), required=True, help='Base image type')
 @click.option('--compliance', '-c', multiple=True, type=click.Choice(['hipaa', 'soc2', 'cis']), help='Compliance profiles (can be used multiple times)')
 @click.option('--no-shell', is_flag=True, default=True, help='Remove shell binaries')
@@ -175,6 +175,141 @@ def stats():
         click.echo(f"Failed: {stats_data['failed_builds']}")
         click.echo(f"In Progress: {stats_data['in_progress']}")
         click.echo(f"Average Compliance Score: {stats_data['avg_compliance_score']}%")
+        
+    except requests.exceptions.RequestException as e:
+        click.echo(f"❌ Error: {str(e)}", err=True)
+        exit(1)
+
+# Phase 2 Commands
+@cli.command()
+@click.argument('build_id')
+def health(build_id):
+    """View health score for a build"""
+    try:
+        response = requests.get(f"{API_URL}/builds/{build_id}/health")
+        response.raise_for_status()
+        
+        health_data = response.json()
+        
+        click.echo(f"\n💚 Health Score Report\n")
+        click.echo(f"Build ID: {build_id}")
+        click.echo(f"Score: {health_data['score']}/100")
+        click.echo(f"Grade: {health_data['grade']}")
+        click.echo(f"Status: {health_data['status']}")
+        
+    except requests.exceptions.RequestException as e:
+        click.echo(f"❌ Error: {str(e)}", err=True)
+        exit(1)
+
+@cli.command()
+@click.argument('build_id')
+def remediation(build_id):
+    """View remediation suggestions for a build"""
+    try:
+        response = requests.get(f"{API_URL}/builds/{build_id}/remediation")
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        click.echo(f"\n🔧 Remediation Suggestions\n")
+        click.echo(f"CIS Benchmark Score: {data['cis_benchmark']['score']}/100 (Grade: {data['cis_benchmark']['grade']})")
+        click.echo(f"Passed: {data['cis_benchmark']['passed']} | Failed: {data['cis_benchmark']['failed']} | Warnings: {data['cis_benchmark']['warnings']}\n")
+        
+        if data['remediation_suggestions']:
+            click.echo("Suggested Remediations:\n")
+            for i, suggestion in enumerate(data['remediation_suggestions'], 1):
+                click.echo(f"{i}. {suggestion['title']} [{suggestion['severity'].upper()}]")
+                click.echo(f"   Effort: {suggestion['effort']}")
+                click.echo(f"   Impact: {suggestion['impact']}\n")
+        else:
+            click.echo("✅ No remediations needed - all checks passed!")
+        
+    except requests.exceptions.RequestException as e:
+        click.echo(f"❌ Error: {str(e)}", err=True)
+        exit(1)
+
+@cli.command()
+@click.option('--days', default=30, help='Number of days to analyze')
+def analytics(days):
+    """View build analytics and trends"""
+    try:
+        trends_response = requests.get(f"{API_URL}/analytics/trends?days={days}")
+        success_response = requests.get(f"{API_URL}/analytics/success-rate?days={days}")
+        health_response = requests.get(f"{API_URL}/analytics/health-scores")
+        
+        trends_response.raise_for_status()
+        success_response.raise_for_status()
+        health_response.raise_for_status()
+        
+        trends = trends_response.json()
+        success = success_response.json()
+        health = health_response.json()
+        
+        click.echo(f"\n📈 Analytics Report ({days} days)\n")
+        
+        click.echo(f"Build Success Rate: {success['success_rate']}%")
+        click.echo(f"Total Builds: {success['total_builds']} (Completed: {success['completed']}, Failed: {success['failed']})\n")
+        
+        click.echo(f"Average Health Score: {health['average_health_score']}/100")
+        click.echo(f"Grade Distribution:")
+        for grade, count in health['grade_distribution'].items():
+            if count > 0:
+                click.echo(f"  {grade}: {count}")
+        
+    except requests.exceptions.RequestException as e:
+        click.echo(f"❌ Error: {str(e)}", err=True)
+        exit(1)
+
+@cli.group()
+def registry():
+    """Manage container registries"""
+    pass
+
+@registry.command('list')
+def list_registries():
+    """List all configured registries"""
+    try:
+        response = requests.get(f"{API_URL}/registries")
+        response.raise_for_status()
+        
+        registries = response.json()
+        
+        if not registries:
+            click.echo("No registries configured.")
+            return
+        
+        click.echo(f"\n📦 Configured Registries\n")
+        click.echo(f"{'Name':<20} {'Type':<15} {'URL':<40}")
+        click.echo("-" * 80)
+        
+        for reg in registries:
+            click.echo(f"{reg['name']:<20} {reg['type']:<15} {reg['url']:<40}")
+            
+    except requests.exceptions.RequestException as e:
+        click.echo(f"❌ Error: {str(e)}", err=True)
+        exit(1)
+
+@registry.command('add')
+@click.option('--name', required=True, help='Registry name')
+@click.option('--type', required=True, type=click.Choice(['jfrog', 'acr', 'dockerhub']), help='Registry type')
+@click.option('--url', required=True, help='Registry URL')
+@click.option('--username', required=True, help='Username')
+@click.option('--password', required=True, prompt=True, hide_input=True, help='Password')
+def add_registry(name, type, url, username, password):
+    """Add a new registry"""
+    try:
+        payload = {
+            "name": name,
+            "type": type,
+            "url": url,
+            "username": username,
+            "password": password
+        }
+        
+        response = requests.post(f"{API_URL}/registries", json=payload)
+        response.raise_for_status()
+        
+        click.echo(f"\n✅ Registry '{name}' added successfully!")
         
     except requests.exceptions.RequestException as e:
         click.echo(f"❌ Error: {str(e)}", err=True)
