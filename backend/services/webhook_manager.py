@@ -10,11 +10,11 @@ Supports:
 Features:
 - Async HTTP delivery with httpx
 - Retry logic with exponential backoff
-- Delivery logging and history
+- Delivery logging and history (persisted to MongoDB)
 - Rate limiting
 - Message formatting per platform
 """
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 import uuid
@@ -24,6 +24,18 @@ import logging
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Database interface - will be set by server.py
+_db_save_delivery: Optional[Callable] = None
+_db_get_deliveries: Optional[Callable] = None
+
+
+def set_db_interface(save_fn: Callable, get_fn: Callable):
+    """Set database interface functions for persistence"""
+    global _db_save_delivery, _db_get_deliveries
+    _db_save_delivery = save_fn
+    _db_get_deliveries = get_fn
+    logger.info("Webhook manager database interface configured")
 
 
 class WebhookEventType(str, Enum):
@@ -233,8 +245,6 @@ class WebhookManager:
             webhook.delivery_count += 1
         
         return deliveries
-        
-        return deliveries
     
     async def send_event_async(
         self,
@@ -280,6 +290,9 @@ class WebhookManager:
             
             deliveries.append(delivery)
             self.delivery_log.append(delivery)
+            
+            # Persist to database if interface is configured
+            await self.save_delivery_to_db(delivery)
             
             # Update webhook stats
             webhook.last_delivery_at = datetime.now(timezone.utc)
@@ -761,12 +774,32 @@ class WebhookManager:
             return payload.get('message', f'Event triggered: {event_type.value}')
     
     def get_delivery_history(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Get recent delivery history"""
+        """Get recent delivery history from memory (fallback)"""
         return sorted(
             self.delivery_log[-limit:],
             key=lambda x: x.get('created_at', ''),
             reverse=True
         )
+    
+    async def get_delivery_history_from_db(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get recent delivery history from database"""
+        if _db_get_deliveries:
+            try:
+                return await _db_get_deliveries(limit)
+            except Exception as e:
+                logger.error(f"Failed to get delivery history from DB: {e}")
+        # Fallback to memory
+        return self.get_delivery_history(limit)
+    
+    async def save_delivery_to_db(self, delivery: Dict[str, Any]) -> bool:
+        """Save delivery record to database"""
+        if _db_save_delivery:
+            try:
+                await _db_save_delivery(delivery)
+                return True
+            except Exception as e:
+                logger.error(f"Failed to save delivery to DB: {e}")
+        return False
     
     def get_delivery_stats(self) -> Dict[str, Any]:
         """Get delivery statistics"""

@@ -193,12 +193,12 @@ SecureImage Forge is an automated pipeline tool designed to build, harden, and v
 - ✅ COMPLETED: Sigstore library installed and ready for CI/CD environments
 
 ### P2 - Medium Priority
-- Refactor server.py (~2500 lines) into separate routers
+- Refactor server.py (~2600 lines) into separate routers
 - Phase 3 "Proactive Evergreen" (upstream monitoring, auto-PRs)
 - Implement actual Docker builds (currently simulated)
 - Implement actual Trivy scanning
 - Connect to real Kubernetes API for drift detection
-- Persist webhook delivery history to database
+- ✅ COMPLETED: Persist webhook delivery history to database (2026-04-09)
 
 ### P3 - Nice to Have
 - IDE Extensions (VS Code plugin for Dockerfile linting)
@@ -229,9 +229,13 @@ The following features return hardcoded/simulated data:
   - `/app/backend/tests/test_p1_features.py`
 
 ## Last Updated
-2026-04-09 - All P1 tasks COMPLETE: Real Slack integration working, Sigstore library installed
+2026-04-09 - P2 Task COMPLETE: Webhook delivery history persistence to MongoDB
 
 ### Changelog
+- P2 COMPLETE: Webhook delivery history persistence to MongoDB (2026-04-09)
+  - Deliveries stored in `webhook_deliveries` collection
+  - Stats calculated from database for persistence across restarts
+  - All webhook send events now persist to DB
 - P1 COMPLETE: Real Slack webhook integration (100% delivery rate) (2026-04-09)
 - P1 COMPLETE: Sigstore v4.2.0 installed for keyless signing (2026-04-09)
 - P1 Features: SLSA Attestation, VEX Documents, Webhooks (2026-04-09)

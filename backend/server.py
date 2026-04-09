@@ -42,7 +42,7 @@ from services.vex_generator import (
 )
 from services.evergreen_pipeline import EvergreenPipeline, get_evergreen_stats
 from services.lifecycle_manager import LifecycleManager, DeprecationPolicy, ImageLifecycleStage, run_garbage_collection
-from services.webhook_manager import WebhookManager, WebhookConfig, WebhookEventType, WebhookDestination, DeliveryStatus
+from services.webhook_manager import WebhookManager, WebhookConfig, WebhookEventType, WebhookDestination, DeliveryStatus, set_db_interface
 # Import Vulnerability Remediation service
 from services.vulnerability_remediation import (
     analyze_vulnerabilities,
@@ -1726,8 +1726,8 @@ async def create_exception_request(request_data: Dict[str, Any]):
     
     await db.exceptions.insert_one(exception)
     
-    # Send webhook notification
-    webhook_manager.send_event(WebhookEventType.EXCEPTION_REQUESTED, {
+    # Send webhook notification and persist to DB
+    await send_webhook_and_persist(WebhookEventType.EXCEPTION_REQUESTED, {
         "exception_id": exception["id"],
         "build_id": exception["build_id"],
         "requestor": exception["requestor"],
@@ -1773,8 +1773,8 @@ async def approve_exception(exception_id: str, approval_data: Dict[str, Any]):
         }}
     )
     
-    # Send webhook notification
-    webhook_manager.send_event(WebhookEventType.EXCEPTION_APPROVED, {
+    # Send webhook notification and persist to DB
+    await send_webhook_and_persist(WebhookEventType.EXCEPTION_APPROVED, {
         "exception_id": exception_id,
         "build_id": exception["build_id"],
         "approver": approver
@@ -1905,7 +1905,7 @@ async def scan_for_drift():
     
     # Send webhook if critical drifts found
     if critical_drifts > 0:
-        webhook_manager.send_event(WebhookEventType.DRIFT_DETECTED, {
+        await send_webhook_and_persist(WebhookEventType.DRIFT_DETECTED, {
             "scan_id": scan_record["id"],
             "critical_drifts": critical_drifts,
             "total_drifted": total_drifted
@@ -2156,7 +2156,7 @@ async def auto_remediate_with_policy(build_id: str):
     
     # Send notification if enabled
     if policy.get("notify_on_remediation"):
-        webhook_manager.send_event(WebhookEventType.BUILD_COMPLETED, {
+        await send_webhook_and_persist(WebhookEventType.BUILD_COMPLETED, {
             "build_id": build_id,
             "image_tag": build.get("image_tag"),
             "remediation_applied": True,
@@ -2212,8 +2212,8 @@ async def get_slsa_attestation(build_id: str, level: int = 3):
         upsert=True
     )
     
-    # Send webhook notification
-    webhook_manager.send_event(WebhookEventType.SLSA_ATTESTATION_GENERATED, {
+    # Send webhook notification and persist to DB
+    await send_webhook_and_persist(WebhookEventType.SLSA_ATTESTATION_GENERATED, {
         "build_id": build_id,
         "image_tag": build_data["image_tag"],
         "slsa_level": level,
@@ -2315,9 +2315,9 @@ async def get_vex_document(build_id: str, format: str = "openvex"):
         upsert=True
     )
     
-    # Send webhook notification
+    # Send webhook notification and persist to DB
     summary = vex_doc.get("summary", {})
-    webhook_manager.send_event(WebhookEventType.VEX_DOCUMENT_GENERATED, {
+    await send_webhook_and_persist(WebhookEventType.VEX_DOCUMENT_GENERATED, {
         "build_id": build_id,
         "image_tag": build.get("image_tag"),
         "false_positive_rate": summary.get("false_positive_rate", 0),
@@ -2408,7 +2408,7 @@ async def get_vex_formats():
 async def list_webhooks():
     """List all registered webhooks"""
     webhooks = webhook_manager.get_webhooks()
-    stats = webhook_manager.get_delivery_stats()
+    stats = await get_webhook_delivery_stats()
     
     return {
         "webhooks": webhooks,
@@ -2565,12 +2565,19 @@ async def list_webhook_destinations():
 
 @api_router.get("/webhooks/delivery-history")
 async def get_webhook_delivery_history(limit: int = 50):
-    """Get webhook delivery history"""
-    history = webhook_manager.get_delivery_history(limit)
-    stats = webhook_manager.get_delivery_stats()
+    """Get webhook delivery history from database"""
+    # Fetch from database
+    deliveries = await get_webhook_deliveries(limit)
+    
+    # Fallback to in-memory if DB is empty
+    if not deliveries:
+        deliveries = webhook_manager.get_delivery_history(limit)
+    
+    # Get stats from database
+    stats = await get_webhook_delivery_stats()
     
     return {
-        "deliveries": history,
+        "deliveries": deliveries,
         "stats": stats
     }
 
@@ -2618,9 +2625,64 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Database interface functions for webhook delivery persistence
+async def save_webhook_delivery(delivery: dict):
+    """Save webhook delivery record to database"""
+    # Make a copy to avoid MongoDB mutating the original dict with _id
+    delivery_copy = {**delivery}
+    await db.webhook_deliveries.insert_one(delivery_copy)
+
+
+async def get_webhook_deliveries(limit: int = 50):
+    """Get webhook delivery history from database"""
+    deliveries = await db.webhook_deliveries.find(
+        {},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    return deliveries
+
+
+async def get_webhook_delivery_stats():
+    """Get webhook delivery statistics from database"""
+    # Count total deliveries
+    total = await db.webhook_deliveries.count_documents({})
+    success = await db.webhook_deliveries.count_documents({"status": "success"})
+    failed = await db.webhook_deliveries.count_documents({"status": "failed"})
+    
+    # Get webhook counts from manager (still in-memory)
+    registered = len(webhook_manager.webhooks)
+    enabled = sum(1 for w in webhook_manager.webhooks.values() if w.enabled)
+    
+    return {
+        "total_deliveries": total,
+        "successful": success,
+        "failed": failed,
+        "success_rate": round((success / total * 100) if total > 0 else 0, 2),
+        "registered_webhooks": registered,
+        "enabled_webhooks": enabled
+    }
+
+
+async def send_webhook_and_persist(event_type: WebhookEventType, payload: dict):
+    """Send webhook event and persist deliveries to database"""
+    # Send the webhook (synchronous HTTP call)
+    deliveries = webhook_manager.send_event(event_type, payload)
+    
+    # Persist each delivery to database
+    for delivery in deliveries:
+        try:
+            await save_webhook_delivery(delivery)
+        except Exception as e:
+            logger.error(f"Failed to persist webhook delivery: {e}")
+
+
 @app.on_event("startup")
 async def load_webhooks_from_db():
-    """Load registered webhooks from database on startup"""
+    """Load registered webhooks from database on startup and configure DB interface"""
+    # Configure the webhook manager's database interface
+    set_db_interface(save_webhook_delivery, get_webhook_deliveries)
+    logger.info("Webhook delivery database interface configured")
+    
     try:
         webhooks = await db.webhooks.find({}, {"_id": 0}).to_list(100)
         for wh in webhooks:
