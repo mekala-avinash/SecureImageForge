@@ -46,10 +46,24 @@ SecureImage Forge is an automated pipeline tool designed to build, harden, and v
 - [x] OPA Policies UI page
 - [x] Policy templates system
 
-### Phase 4 - Enterprise Ecosystem (PARTIAL - MOCKED)
-- [x] Service files created for OPA, SLSA, VEX, Drift Detection
-- [ ] Actual implementation needed (currently returns hardcoded data)
-- [ ] UI integration for Phase 4 features
+### Phase 4 - Enterprise Ecosystem (COMPLETE - 2026-04-09)
+- [x] Exception Management Workflow
+  - Create exception requests with templates (debug_shell_access, root_user_access, legacy_base_image, cve_threshold_override)
+  - Approval/rejection workflow with audit trail
+  - Duration-based exceptions with expiration
+  - Filter by status (pending/approved/rejected)
+- [x] Global Drift Detection Dashboard
+  - Monitor runtime containers from Kubernetes clusters
+  - Detect configuration drift from hardened templates
+  - Risk levels (critical/high/medium/low)
+  - Drift details (digest_mismatch, unauthorized_shell, root_user)
+  - Scan history and statistics
+- [x] Policy-Based Auto-Remediation
+  - Three policy modes: Strict, Graceful, Notify Only
+  - Configurable auto-fix settings per severity (Critical/High/Medium)
+  - Fail build option for unfixable critical CVEs
+  - Notification settings
+- [x] Webhook Manager foundation (simulated delivery)
 
 ### Phase 4.5 - Granular Runtime & OS Controls (COMPLETE - 2026-04-09)
 - [x] EnhancedNewBuild component with Simple/Advanced toggle
@@ -115,6 +129,27 @@ SecureImage Forge is an automated pipeline tool designed to build, harden, and v
 - `GET /api/remediation/cve-database` - List all known CVEs with fixes
 - `GET /api/remediation/stats` - Overall remediation statistics
 
+### Exception Management
+- `GET /api/exceptions` - List exception requests (filter by status)
+- `GET /api/exceptions/templates` - Get exception templates
+- `POST /api/exceptions` - Create exception request
+- `GET /api/exceptions/{id}` - Get exception details
+- `POST /api/exceptions/{id}/approve` - Approve exception
+- `POST /api/exceptions/{id}/reject` - Reject exception
+
+### Drift Detection
+- `GET /api/drift/runtime-images` - Get monitored runtime images
+- `POST /api/drift/register-image` - Register image for monitoring
+- `GET /api/drift/scan` - Run drift scan
+- `GET /api/drift/history` - Get scan history
+- `GET /api/drift/stats` - Get drift statistics
+
+### Remediation Policies
+- `GET /api/remediation/policies` - Get all policies with active policy
+- `POST /api/remediation/policies` - Create/update policy
+- `POST /api/remediation/policies/{id}/activate` - Activate a policy
+- `POST /api/builds/{id}/auto-remediate-with-policy` - Apply policy-based remediation
+
 ### Policies & Analytics
 - `GET /api/policies` - List policies
 - `POST /api/policies` - Create policy
@@ -126,17 +161,16 @@ SecureImage Forge is an automated pipeline tool designed to build, harden, and v
 - None currently
 
 ### P1 - High Priority
-- Phase 2 Policy-Based Auto-Fix (auto-remediate during CI/CD builds)
-- Wire Phase 4 "Exception Management Workflow" into UI
-- Wire Phase 4 "Global Drift Detection" Dashboard
 - Implement actual SLSA Level 3/4 provenance generation (not mocked)
+- Implement actual VEX document generation (not mocked)
+- Connect webhook notifications to real Slack/Teams endpoints
 
 ### P2 - Medium Priority
-- Refactor server.py (~1640 lines) into separate routers
+- Refactor server.py (~1950 lines) into separate routers
 - Phase 3 "Proactive Evergreen" (upstream monitoring, auto-PRs)
 - Implement actual Docker builds (currently simulated)
 - Implement actual Trivy scanning
-- Webhook notifications (Slack/Teams) for remediation events
+- Connect to real Kubernetes API for drift detection
 
 ### P3 - Nice to Have
 - IDE Extensions (VS Code plugin for Dockerfile linting)
@@ -157,11 +191,17 @@ The following features return hardcoded/simulated data:
 - Delta scan verification
 
 ### Test Results (Latest)
-- Backend: 100% (41/41 tests passed)
+- Backend: 100% (61/61 tests passed across all iterations)
 - Frontend: 100% (all UI tests passed)
 - Test files: 
   - `/app/backend/tests/test_secureimage_forge.py`
   - `/app/backend/tests/test_vulnerability_remediation.py`
+  - `/app/backend/tests/test_phase4_features.py`
 
 ## Last Updated
-2026-04-09 - Completed Phase 5 Automatic Vulnerability Remediation implementation and testing
+2026-04-09 - Completed Phase 4 Exception Management, Drift Detection, and Policy-Based Auto-Remediation
+
+### Changelog
+- Phase 5: Automatic Vulnerability Remediation (2026-04-09)
+- Phase 4: Exception Management, Drift Detection, Remediation Policies (2026-04-09)
+- Phase 4.5: Granular Runtime & OS Controls (2026-04-09)
