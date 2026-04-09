@@ -24,6 +24,15 @@ from services.remediation_engine import generate_remediation_suggestions, get_ci
 from services.policy_engine import evaluate_all_policies, POLICY_TEMPLATES, get_policy_recommendation
 from services.image_updater import check_for_updates, generate_update_recommendation, simulate_cve_in_old_version
 from services.signing_service import sign_image, verify_signature, generate_attestation
+# Import Phase 4 services
+from services.opa_engine import get_enterprise_policies, evaluate_rego_policy
+from services.exception_manager import ExceptionManager, ExceptionRequest, ExceptionStatus, get_exception_templates
+from services.drift_detector import DriftDetector, simulate_k8s_runtime_images
+from services.slsa_attestor import generate_slsa_l3_provenance, verify_slsa_provenance, get_slsa_requirements
+from services.vex_generator import generate_vex_document, VEXStatus
+from services.evergreen_pipeline import EvergreenPipeline, get_evergreen_stats
+from services.lifecycle_manager import LifecycleManager, DeprecationPolicy, ImageLifecycleStage, run_garbage_collection
+from services.webhook_manager import WebhookManager, WebhookConfig, WebhookEventType, WebhookDestination
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -39,6 +48,13 @@ try:
 except Exception as e:
     logging.warning(f"Docker client initialization failed: {e}")
     docker_client = None
+
+# Phase 4 service instances
+exception_manager = ExceptionManager()
+drift_detector = DriftDetector()
+evergreen_pipeline = EvergreenPipeline()
+lifecycle_manager = LifecycleManager()
+webhook_manager = WebhookManager()
 
 # Create the main app without a prefix
 app = FastAPI(title="SecureImage Forge API")
