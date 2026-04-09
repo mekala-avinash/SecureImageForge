@@ -1653,6 +1653,518 @@ async def get_remediation_stats():
     }
 
 
+# =============================================================================
+# EXCEPTION MANAGEMENT ENDPOINTS (Phase 4 - Request for Deviation)
+# =============================================================================
+
+@api_router.get("/exceptions")
+async def list_exceptions(status: Optional[str] = None):
+    """List all exception requests"""
+    query = {}
+    if status:
+        query["status"] = status
+    
+    exceptions = await db.exceptions.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    
+    # Count by status
+    pending = await db.exceptions.count_documents({"status": "pending"})
+    approved = await db.exceptions.count_documents({"status": "approved"})
+    rejected = await db.exceptions.count_documents({"status": "rejected"})
+    
+    return {
+        "exceptions": exceptions,
+        "counts": {
+            "pending": pending,
+            "approved": approved,
+            "rejected": rejected,
+            "total": len(exceptions)
+        }
+    }
+
+
+@api_router.get("/exceptions/templates")
+async def get_exception_request_templates():
+    """Get available exception request templates"""
+    return {
+        "templates": get_exception_templates()
+    }
+
+
+@api_router.post("/exceptions")
+async def create_exception_request(request_data: Dict[str, Any]):
+    """Create a new exception request"""
+    required_fields = ["build_id", "policy_id", "requestor", "justification"]
+    for field in required_fields:
+        if field not in request_data:
+            raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+    
+    exception = {
+        "id": str(uuid.uuid4()),
+        "build_id": request_data["build_id"],
+        "policy_id": request_data["policy_id"],
+        "requestor": request_data["requestor"],
+        "justification": request_data["justification"],
+        "template_type": request_data.get("template_type"),
+        "duration_days": request_data.get("duration_days", 30),
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": None,
+        "approver": None,
+        "approved_at": None,
+        "rejection_reason": None
+    }
+    
+    await db.exceptions.insert_one(exception)
+    
+    # Send webhook notification
+    webhook_manager.send_event(WebhookEventType.EXCEPTION_REQUESTED, {
+        "exception_id": exception["id"],
+        "build_id": exception["build_id"],
+        "requestor": exception["requestor"],
+        "policy_id": exception["policy_id"]
+    })
+    
+    return {"id": exception["id"], "status": "pending", "message": "Exception request created successfully"}
+
+
+@api_router.get("/exceptions/{exception_id}")
+async def get_exception(exception_id: str):
+    """Get exception request details"""
+    exception = await db.exceptions.find_one({"id": exception_id}, {"_id": 0})
+    if not exception:
+        raise HTTPException(status_code=404, detail="Exception not found")
+    return exception
+
+
+@api_router.post("/exceptions/{exception_id}/approve")
+async def approve_exception(exception_id: str, approval_data: Dict[str, Any]):
+    """Approve an exception request"""
+    exception = await db.exceptions.find_one({"id": exception_id})
+    if not exception:
+        raise HTTPException(status_code=404, detail="Exception not found")
+    
+    if exception["status"] != "pending":
+        raise HTTPException(status_code=400, detail=f"Exception is already {exception['status']}")
+    
+    approver = approval_data.get("approver", "security_admin")
+    notes = approval_data.get("notes", "")
+    duration_days = exception.get("duration_days", 30)
+    
+    expires_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
+    
+    await db.exceptions.update_one(
+        {"id": exception_id},
+        {"$set": {
+            "status": "approved",
+            "approver": approver,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "approval_notes": notes,
+            "expires_at": expires_at.isoformat()
+        }}
+    )
+    
+    # Send webhook notification
+    webhook_manager.send_event(WebhookEventType.EXCEPTION_APPROVED, {
+        "exception_id": exception_id,
+        "build_id": exception["build_id"],
+        "approver": approver
+    })
+    
+    return {"status": "approved", "expires_at": expires_at.isoformat(), "message": "Exception approved"}
+
+
+@api_router.post("/exceptions/{exception_id}/reject")
+async def reject_exception(exception_id: str, rejection_data: Dict[str, Any]):
+    """Reject an exception request"""
+    exception = await db.exceptions.find_one({"id": exception_id})
+    if not exception:
+        raise HTTPException(status_code=404, detail="Exception not found")
+    
+    if exception["status"] != "pending":
+        raise HTTPException(status_code=400, detail=f"Exception is already {exception['status']}")
+    
+    approver = rejection_data.get("approver", "security_admin")
+    reason = rejection_data.get("reason", "No reason provided")
+    
+    await db.exceptions.update_one(
+        {"id": exception_id},
+        {"$set": {
+            "status": "rejected",
+            "approver": approver,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "rejection_reason": reason
+        }}
+    )
+    
+    return {"status": "rejected", "message": "Exception rejected", "reason": reason}
+
+
+# =============================================================================
+# DRIFT DETECTION ENDPOINTS (Phase 4 - Global Drift Dashboard)
+# =============================================================================
+
+@api_router.get("/drift/runtime-images")
+async def get_runtime_images():
+    """Get all registered runtime images from Kubernetes clusters"""
+    # In production, this would connect to K8s API
+    # For now, return simulated data plus any DB-stored images
+    simulated = simulate_k8s_runtime_images()
+    
+    # Also fetch from DB
+    db_images = await db.runtime_images.find({}, {"_id": 0}).to_list(100)
+    
+    all_images = simulated + db_images
+    
+    return {
+        "images": all_images,
+        "total_count": len(all_images),
+        "clusters": ["production", "staging"],  # Simulated clusters
+        "last_scan": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@api_router.post("/drift/register-image")
+async def register_runtime_image(image_data: Dict[str, Any]):
+    """Register a runtime image for drift detection"""
+    image_record = {
+        "image_id": image_data.get("image_id", str(uuid.uuid4())),
+        "namespace": image_data.get("namespace", "default"),
+        "pod_name": image_data.get("pod_name"),
+        "image_tag": image_data["image_tag"],
+        "digest": image_data.get("digest", ""),
+        "template_id": image_data.get("template_id"),
+        "has_shell": image_data.get("has_shell", False),
+        "running_as_root": image_data.get("running_as_root", False),
+        "registered_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.runtime_images.insert_one(image_record)
+    
+    # Also register with in-memory drift detector
+    drift_detector.register_runtime_image(image_record["image_id"], image_record)
+    
+    return {"image_id": image_record["image_id"], "message": "Image registered for drift detection"}
+
+
+@api_router.get("/drift/scan")
+async def scan_for_drift():
+    """Scan all runtime images for configuration drift"""
+    # Get simulated K8s images
+    runtime_images = simulate_k8s_runtime_images()
+    
+    drift_results = []
+    total_drifted = 0
+    critical_drifts = 0
+    
+    for image in runtime_images:
+        # Register and scan each image
+        drift_detector.register_runtime_image(image["image_id"], image)
+        
+        if image.get("template_id"):
+            # Register a simulated template
+            drift_detector.register_template(image["template_id"], {
+                "has_shell": False,
+                "running_as_root": False,
+                "digest": "sha256:expected_secure_digest"
+            })
+            
+            # Detect drift
+            result = drift_detector.detect_drift(image["image_id"], image["template_id"])
+            result["image_tag"] = image.get("image_tag")
+            result["namespace"] = image.get("namespace")
+            result["pod_name"] = image.get("pod_name")
+            
+            if result["has_drift"]:
+                total_drifted += 1
+                if result["risk_level"] == "critical":
+                    critical_drifts += 1
+            
+            drift_results.append(result)
+    
+    # Store scan results
+    scan_record = {
+        "id": str(uuid.uuid4()),
+        "scanned_at": datetime.now(timezone.utc).isoformat(),
+        "total_images": len(runtime_images),
+        "drifted_count": total_drifted,
+        "critical_drifts": critical_drifts,
+        "results": drift_results
+    }
+    
+    await db.drift_scans.insert_one(scan_record)
+    
+    # Send webhook if critical drifts found
+    if critical_drifts > 0:
+        webhook_manager.send_event(WebhookEventType.DRIFT_DETECTED, {
+            "scan_id": scan_record["id"],
+            "critical_drifts": critical_drifts,
+            "total_drifted": total_drifted
+        })
+    
+    return {
+        "scan_id": scan_record["id"],
+        "summary": {
+            "total_images": len(runtime_images),
+            "compliant": len(runtime_images) - total_drifted,
+            "drifted": total_drifted,
+            "critical": critical_drifts
+        },
+        "results": drift_results,
+        "scanned_at": scan_record["scanned_at"]
+    }
+
+
+@api_router.get("/drift/history")
+async def get_drift_scan_history():
+    """Get drift scan history"""
+    scans = await db.drift_scans.find({}, {"_id": 0, "results": 0}).sort("scanned_at", -1).to_list(50)
+    
+    return {
+        "scans": scans,
+        "total_scans": len(scans)
+    }
+
+
+@api_router.get("/drift/stats")
+async def get_drift_stats():
+    """Get drift detection statistics"""
+    # Get latest scan
+    latest_scan = await db.drift_scans.find_one({}, {"_id": 0}, sort=[("scanned_at", -1)])
+    
+    # Calculate averages from history
+    total_scans = await db.drift_scans.count_documents({})
+    
+    return {
+        "latest_scan": latest_scan,
+        "total_scans": total_scans,
+        "monitored_clusters": 2,
+        "monitored_namespaces": ["production", "staging", "development"]
+    }
+
+
+# =============================================================================
+# REMEDIATION POLICY ENDPOINTS (Phase 5.2 - Policy-Based Auto-Fix)
+# =============================================================================
+
+@api_router.get("/remediation/policies")
+async def get_remediation_policies():
+    """Get all remediation policies"""
+    policies = await db.remediation_policies.find({}, {"_id": 0}).to_list(100)
+    
+    if not policies:
+        # Return default policies
+        policies = [
+            {
+                "id": "default-strict",
+                "name": "Strict Mode",
+                "description": "Fail build if auto-remediation fails",
+                "mode": "strict",
+                "auto_remediate_critical": True,
+                "auto_remediate_high": True,
+                "auto_remediate_medium": False,
+                "fail_on_unfixable_critical": True,
+                "notify_on_remediation": True,
+                "enabled": False
+            },
+            {
+                "id": "default-graceful",
+                "name": "Graceful Mode",
+                "description": "Apply fixes but allow builds to pass if some CVEs remain",
+                "mode": "graceful",
+                "auto_remediate_critical": True,
+                "auto_remediate_high": True,
+                "auto_remediate_medium": True,
+                "fail_on_unfixable_critical": False,
+                "notify_on_remediation": True,
+                "enabled": True
+            },
+            {
+                "id": "default-notify-only",
+                "name": "Notify Only",
+                "description": "Detect vulnerabilities but don't auto-fix (notification only)",
+                "mode": "notify_only",
+                "auto_remediate_critical": False,
+                "auto_remediate_high": False,
+                "auto_remediate_medium": False,
+                "fail_on_unfixable_critical": False,
+                "notify_on_remediation": True,
+                "enabled": False
+            }
+        ]
+    
+    return {
+        "policies": policies,
+        "active_policy": next((p for p in policies if p.get("enabled")), policies[1] if len(policies) > 1 else None)
+    }
+
+
+@api_router.post("/remediation/policies")
+async def create_remediation_policy(policy_data: Dict[str, Any]):
+    """Create or update a remediation policy"""
+    policy = {
+        "id": policy_data.get("id", str(uuid.uuid4())),
+        "name": policy_data["name"],
+        "description": policy_data.get("description", ""),
+        "mode": policy_data.get("mode", "graceful"),
+        "auto_remediate_critical": policy_data.get("auto_remediate_critical", True),
+        "auto_remediate_high": policy_data.get("auto_remediate_high", True),
+        "auto_remediate_medium": policy_data.get("auto_remediate_medium", False),
+        "fail_on_unfixable_critical": policy_data.get("fail_on_unfixable_critical", False),
+        "notify_on_remediation": policy_data.get("notify_on_remediation", True),
+        "enabled": policy_data.get("enabled", False),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    # If enabling this policy, disable others
+    if policy["enabled"]:
+        await db.remediation_policies.update_many({}, {"$set": {"enabled": False}})
+    
+    await db.remediation_policies.update_one(
+        {"id": policy["id"]},
+        {"$set": policy},
+        upsert=True
+    )
+    
+    return {"id": policy["id"], "message": "Policy saved successfully"}
+
+
+@api_router.post("/remediation/policies/{policy_id}/activate")
+async def activate_remediation_policy(policy_id: str):
+    """Activate a specific remediation policy"""
+    policy = await db.remediation_policies.find_one({"id": policy_id})
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    
+    # Disable all other policies
+    await db.remediation_policies.update_many({}, {"$set": {"enabled": False}})
+    
+    # Enable this policy
+    await db.remediation_policies.update_one({"id": policy_id}, {"$set": {"enabled": True}})
+    
+    return {"message": f"Policy '{policy.get('name')}' activated"}
+
+
+@api_router.post("/builds/{build_id}/auto-remediate-with-policy")
+async def auto_remediate_with_policy(build_id: str):
+    """Auto-remediate vulnerabilities according to active policy"""
+    # Get active policy
+    policy = await db.remediation_policies.find_one({"enabled": True})
+    if not policy:
+        # Use default graceful policy
+        policy = {
+            "mode": "graceful",
+            "auto_remediate_critical": True,
+            "auto_remediate_high": True,
+            "auto_remediate_medium": False,
+            "fail_on_unfixable_critical": False,
+            "notify_on_remediation": True
+        }
+    
+    # Get build
+    build = await db.build_history.find_one({"id": build_id}, {"_id": 0})
+    if not build:
+        raise HTTPException(status_code=404, detail="Build not found")
+    
+    # Get scan results
+    scan = await db.scan_results.find_one({"build_id": build_id}, {"_id": 0})
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan results not found")
+    
+    # Get build config
+    config = await db.build_configs.find_one({"id": build.get("config_id")}, {"_id": 0})
+    base_image = config.get("base_image", "alpine") if config else "alpine"
+    runtime = config.get("runtime", "java") if config else "java"
+    
+    # Analyze and filter vulnerabilities by policy
+    analysis = analyze_vulnerabilities(scan.get("vulnerabilities", {}), base_image)
+    
+    # Filter based on policy settings
+    filtered_vulns = []
+    for vuln in analysis["vulnerabilities_with_remediation"]:
+        severity = vuln.get("severity", "LOW")
+        if severity == "CRITICAL" and policy.get("auto_remediate_critical"):
+            filtered_vulns.append(vuln)
+        elif severity == "HIGH" and policy.get("auto_remediate_high"):
+            filtered_vulns.append(vuln)
+        elif severity == "MEDIUM" and policy.get("auto_remediate_medium"):
+            filtered_vulns.append(vuln)
+    
+    # Filter to only auto-fixable
+    fixable_vulns = [v for v in filtered_vulns if v.get("auto_fixable")]
+    
+    if not fixable_vulns:
+        # Check if we should fail
+        unfixable_critical = sum(1 for v in analysis["vulnerabilities_with_remediation"] 
+                                 if v.get("severity") == "CRITICAL" and not v.get("auto_fixable"))
+        
+        if policy.get("fail_on_unfixable_critical") and unfixable_critical > 0:
+            return {
+                "status": "failed",
+                "mode": policy.get("mode"),
+                "message": f"Build blocked: {unfixable_critical} unfixable critical vulnerabilities",
+                "unfixable_critical": unfixable_critical
+            }
+        
+        return {
+            "status": "skipped",
+            "mode": policy.get("mode"),
+            "message": "No auto-fixable vulnerabilities matching policy criteria",
+            "policy_applied": policy.get("name", "default")
+        }
+    
+    # Generate remediation
+    analysis["vulnerabilities_with_remediation"] = fixable_vulns
+    analysis["generated_dockerfile_fixes"] = [
+        f for f in analysis.get("generated_dockerfile_fixes", [])
+        if any(v.get("id") == f.get("cve_id") for v in fixable_vulns)
+    ]
+    
+    original_dockerfile = f"FROM {base_image}\n# Original application layers..."
+    remediated = generate_remediated_dockerfile(
+        original_dockerfile,
+        analysis,
+        base_image,
+        runtime
+    )
+    
+    # Create remediation record
+    remediation_id = str(uuid.uuid4())
+    remediation_record = {
+        "id": remediation_id,
+        "build_id": build_id,
+        "build_name": build.get("config_name"),
+        "policy_applied": policy.get("name", "default"),
+        "policy_mode": policy.get("mode"),
+        "status": "completed",
+        "remediated_dockerfile": remediated["dockerfile"],
+        "applied_fixes": remediated["applied_fixes"],
+        "fixes_count": remediated["fixes_applied_count"],
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.remediation_records.insert_one(remediation_record)
+    
+    # Send notification if enabled
+    if policy.get("notify_on_remediation"):
+        webhook_manager.send_event(WebhookEventType.BUILD_COMPLETED, {
+            "build_id": build_id,
+            "image_tag": build.get("image_tag"),
+            "remediation_applied": True,
+            "fixes_count": remediated["fixes_applied_count"]
+        })
+    
+    return {
+        "remediation_id": remediation_id,
+        "status": "completed",
+        "mode": policy.get("mode"),
+        "policy_applied": policy.get("name", "default"),
+        "dockerfile": remediated["dockerfile"],
+        "applied_fixes": remediated["applied_fixes"],
+        "fixes_count": remediated["fixes_applied_count"],
+        "message": f"Auto-remediation completed with {remediated['fixes_applied_count']} fixes"
+    }
+
+
 # Include the router in the main app
 app.include_router(api_router)
 

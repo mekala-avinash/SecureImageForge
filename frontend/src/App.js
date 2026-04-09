@@ -12,13 +12,19 @@ import {
   CheckCircle,
   XCircle,
   Clock,
-  Warning
+  Warning,
+  ShieldWarning,
+  Detective,
+  Gear
 } from '@phosphor-icons/react';
 import { BuildDetail } from './components/BuildDetail';
 import { BuildsList } from './components/BuildsList';
 import { Analytics } from './components/Analytics';
 import { Policies } from './components/Policies';
 import { EnhancedNewBuild } from './components/EnhancedNewBuild';
+import { Exceptions } from './components/Exceptions';
+import { DriftDetection } from './components/DriftDetection';
+import { RemediationPolicies } from './components/RemediationPolicies';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -64,6 +70,27 @@ const Header = () => {
             data-testid="nav-policies"
           >
             Policies
+          </Link>
+          <Link 
+            to="/exceptions" 
+            className="text-sm font-medium hover:text-[#002FA7] transition-colors"
+            data-testid="nav-exceptions"
+          >
+            Exceptions
+          </Link>
+          <Link 
+            to="/drift" 
+            className="text-sm font-medium hover:text-[#002FA7] transition-colors"
+            data-testid="nav-drift"
+          >
+            Drift
+          </Link>
+          <Link 
+            to="/remediation-policies" 
+            className="text-sm font-medium hover:text-[#002FA7] transition-colors"
+            data-testid="nav-remediation-policies"
+          >
+            Auto-Fix
           </Link>
           <Link 
             to="/new" 
@@ -485,6 +512,9 @@ export default function App() {
           <Route path="/builds/:buildId" element={<BuildDetail />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/policies" element={<Policies />} />
+          <Route path="/exceptions" element={<Exceptions />} />
+          <Route path="/drift" element={<DriftDetection />} />
+          <Route path="/remediation-policies" element={<RemediationPolicies />} />
         </Routes>
       </BrowserRouter>
     </div>
