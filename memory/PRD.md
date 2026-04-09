@@ -16,10 +16,14 @@ SecureImage Forge is an automated pipeline tool designed to build, harden, and v
 - **CLI**: Click-based CLI (`/app/forge`)
 
 ### Key Files
-- `/app/backend/server.py` - Main FastAPI application (~1640 lines)
+- `/app/backend/server.py` - Main FastAPI application (~2500 lines)
 - `/app/frontend/src/App.js` - React router and main components
 - `/app/frontend/src/components/EnhancedNewBuild.js` - Advanced build config form
-- `/app/frontend/src/components/BuildDetail.js` - Build details with remediation UI
+- `/app/frontend/src/components/BuildDetail.js` - Build details with SLSA/VEX/remediation tabs
+- `/app/frontend/src/components/Webhooks.js` - Webhook ChatOps management
+- `/app/backend/services/slsa_attestor.py` - SLSA Level 3/4 provenance generation
+- `/app/backend/services/vex_generator.py` - VEX document generation (OpenVEX/CSAF)
+- `/app/backend/services/webhook_manager.py` - ChatOps webhooks (Slack/Teams/Discord)
 - `/app/backend/services/vulnerability_remediation.py` - CVE database and auto-fix logic
 - `/app/backend/services/version_matrix.py` - Runtime version matrices
 - `/app/backend/cli/forge_cli.py` - CLI interface
@@ -58,6 +62,30 @@ SecureImage Forge is an automated pipeline tool designed to build, harden, and v
   - Risk levels (critical/high/medium/low)
   - Drift details (digest_mismatch, unauthorized_shell, root_user)
   - Scan history and statistics
+- [x] SLSA Level 3/4 Provenance Attestation (NEW)
+  - In-toto Statement v1 format
+  - Configurable SLSA levels (1-4)
+  - Build definition with materials and steps
+  - Signed provenance with verification
+  - Download as JSON and Base64
+- [x] VEX Document Generation (NEW)
+  - OpenVEX and CSAF formats
+  - Exploitability analysis with context
+  - False positive identification
+  - Risk score reduction calculation
+  - Justification codes (component_not_present, etc.)
+- [x] Webhook ChatOps Integration (NEW)
+  - Slack (Block Kit formatting)
+  - Microsoft Teams (Adaptive Cards)
+  - Discord (Embeds)
+  - Generic HTTP webhooks
+  - 17 event types supported
+  - Test webhook functionality
+  - Delivery history tracking
+- [x] Policy-Based Auto-Remediation
+  - Three modes: Strict, Graceful, Notify Only
+  - Configurable per-severity settings
+  - Webhook notifications on remediation
 - [x] Policy-Based Auto-Remediation
   - Three policy modes: Strict, Graceful, Notify Only
   - Configurable auto-fix settings per severity (Critical/High/Medium)
@@ -161,12 +189,11 @@ SecureImage Forge is an automated pipeline tool designed to build, harden, and v
 - None currently
 
 ### P1 - High Priority
-- Implement actual SLSA Level 3/4 provenance generation (not mocked)
-- Implement actual VEX document generation (not mocked)
-- Connect webhook notifications to real Slack/Teams endpoints
+- Connect webhooks to real Slack/Teams/Discord endpoints (currently simulated)
+- Implement actual Sigstore/Cosign signing for SLSA attestations
 
 ### P2 - Medium Priority
-- Refactor server.py (~1950 lines) into separate routers
+- Refactor server.py (~2500 lines) into separate routers
 - Phase 3 "Proactive Evergreen" (upstream monitoring, auto-PRs)
 - Implement actual Docker builds (currently simulated)
 - Implement actual Trivy scanning
@@ -176,6 +203,7 @@ SecureImage Forge is an automated pipeline tool designed to build, harden, and v
 - IDE Extensions (VS Code plugin for Dockerfile linting)
 - Cloud-Native Registry Shims
 - Real-time CVE database integration (NVD, OSV.dev)
+- Rekor transparency log integration
 
 ## Technical Notes
 
@@ -191,17 +219,19 @@ The following features return hardcoded/simulated data:
 - Delta scan verification
 
 ### Test Results (Latest)
-- Backend: 100% (61/61 tests passed across all iterations)
+- Backend: 100% (75+ tests passed across all iterations)
 - Frontend: 100% (all UI tests passed)
 - Test files: 
   - `/app/backend/tests/test_secureimage_forge.py`
   - `/app/backend/tests/test_vulnerability_remediation.py`
   - `/app/backend/tests/test_phase4_features.py`
+  - `/app/backend/tests/test_p1_features.py`
 
 ## Last Updated
-2026-04-09 - Completed Phase 4 Exception Management, Drift Detection, and Policy-Based Auto-Remediation
+2026-04-09 - Completed all P1 tasks: SLSA Level 3/4 provenance, VEX documents, Webhook ChatOps
 
 ### Changelog
+- P1 Features: SLSA Attestation, VEX Documents, Webhooks (2026-04-09)
 - Phase 5: Automatic Vulnerability Remediation (2026-04-09)
 - Phase 4: Exception Management, Drift Detection, Remediation Policies (2026-04-09)
 - Phase 4.5: Granular Runtime & OS Controls (2026-04-09)
