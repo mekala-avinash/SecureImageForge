@@ -3,35 +3,35 @@ Analytics routes
 """
 from fastapi import APIRouter
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any
 
 from database import db
+from services.health_score import calculate_health_score, get_health_grade
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
 @router.get("/trends")
 async def get_analytics_trends(days: int = 30):
-    """Get build trends over time"""
-    end_date = datetime.now(timezone.utc)
-    start_date = end_date - timedelta(days=days)
+    """Get build and health score trends"""
+    start_date = datetime.now(timezone.utc) - timedelta(days=days)
     
+    # Get builds from the period
     builds = await db.build_history.find({
         "started_at": {"$gte": start_date.isoformat()}
     }, {"_id": 0}).to_list(1000)
     
-    # Group by date
+    # Convert datetime strings
+    for build in builds:
+        if isinstance(build.get('started_at'), str):
+            build['started_at'] = datetime.fromisoformat(build['started_at'])
+    
+    # Group by day
     daily_data = {}
     for build in builds:
-        started_at = build.get('started_at')
-        if isinstance(started_at, str):
-            date_key = started_at[:10]
-        else:
-            date_key = started_at.strftime('%Y-%m-%d')
-        
-        if date_key not in daily_data:
-            daily_data[date_key] = {
-                "date": date_key,
+        day = build['started_at'].date().isoformat()
+        if day not in daily_data:
+            daily_data[day] = {
+                "date": day,
                 "total": 0,
                 "completed": 0,
                 "failed": 0,
@@ -39,109 +39,114 @@ async def get_analytics_trends(days: int = 30):
                 "compliance_scores": []
             }
         
-        daily_data[date_key]["total"] += 1
-        if build.get("status") == "completed":
-            daily_data[date_key]["completed"] += 1
-            if build.get("compliance_score"):
-                daily_data[date_key]["compliance_scores"].append(build["compliance_score"])
-        elif build.get("status") == "failed":
-            daily_data[date_key]["failed"] += 1
+        daily_data[day]["total"] += 1
+        if build.get('status') == 'completed':
+            daily_data[day]["completed"] += 1
+        elif build.get('status') == 'failed':
+            daily_data[day]["failed"] += 1
+        
+        if build.get('compliance_score'):
+            daily_data[day]["compliance_scores"].append(build['compliance_score'])
     
     # Calculate averages
-    for date_key in daily_data:
-        scores = daily_data[date_key]["compliance_scores"]
-        if scores:
-            daily_data[date_key]["avg_compliance"] = sum(scores) // len(scores)
-        del daily_data[date_key]["compliance_scores"]
+    trend_data = []
+    for day_data in daily_data.values():
+        if day_data["compliance_scores"]:
+            day_data["avg_compliance"] = int(sum(day_data["compliance_scores"]) / len(day_data["compliance_scores"]))
+        day_data.pop("compliance_scores")
+        trend_data.append(day_data)
     
-    trend_data = sorted(daily_data.values(), key=lambda x: x["date"])
+    trend_data.sort(key=lambda x: x["date"])
     
     return {
-        "period": f"Last {days} days",
-        "trend_data": trend_data,
-        "summary": {
-            "total_builds": sum(d["total"] for d in trend_data),
-            "total_completed": sum(d["completed"] for d in trend_data),
-            "total_failed": sum(d["failed"] for d in trend_data)
-        }
+        "period_days": days,
+        "trend_data": trend_data
     }
 
 
 @router.get("/vulnerabilities")
 async def get_vulnerability_analytics():
-    """Get vulnerability analytics across all builds"""
-    scans = await db.scan_results.find({}, {"_id": 0}).to_list(100)
+    """Get vulnerability trends across all builds"""
+    completed_builds = await db.build_history.find({
+        "status": "completed",
+        "vulnerability_count": {"$exists": True}
+    }, {"_id": 0}).to_list(1000)
     
-    severity_totals = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-    top_cves = {}
+    total_vulns = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    vuln_by_runtime = {}
     
-    for scan in scans:
-        total_count = scan.get("total_count", {})
-        for severity, count in total_count.items():
-            if severity in severity_totals:
-                severity_totals[severity] += count
+    for build in completed_builds:
+        vuln_count = build.get('vulnerability_count', {})
+        for severity in total_vulns.keys():
+            total_vulns[severity] += vuln_count.get(severity, 0)
         
-        vulnerabilities = scan.get("vulnerabilities", {})
-        for severity, vulns in vulnerabilities.items():
-            for vuln in vulns:
-                cve_id = vuln.get("id", "unknown")
-                if cve_id not in top_cves:
-                    top_cves[cve_id] = {"id": cve_id, "count": 0, "severity": severity}
-                top_cves[cve_id]["count"] += 1
+        # Get config to find runtime
+        config = await db.build_configs.find_one({"id": build['config_id']}, {"_id": 0})
+        if config:
+            runtime = config.get('runtime', 'unknown')
+            if runtime not in vuln_by_runtime:
+                vuln_by_runtime[runtime] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+            
+            for severity in total_vulns.keys():
+                vuln_by_runtime[runtime][severity] += vuln_count.get(severity, 0)
     
     return {
-        "severity_distribution": severity_totals,
-        "top_vulnerabilities": sorted(top_cves.values(), key=lambda x: x["count"], reverse=True)[:10],
-        "total_scans": len(scans)
+        "total_vulnerabilities": total_vulns,
+        "by_runtime": vuln_by_runtime,
+        "total_builds_analyzed": len(completed_builds)
     }
 
 
 @router.get("/health-scores")
 async def get_health_score_analytics():
-    """Get health score distribution"""
-    scores = await db.health_scores.find({}, {"_id": 0}).to_list(1000)
+    """Get health score distribution and trends"""
+    completed_builds = await db.build_history.find({
+        "status": "completed"
+    }, {"_id": 0}).to_list(1000)
     
-    distribution = {"A": 0, "B": 0, "C": 0, "D": 0, "F": 0}
-    total_score = 0
+    scores = []
+    grades = {"A": 0, "B": 0, "C": 0, "D": 0, "F": 0}
     
-    for score in scores:
-        grade = score.get("grade", "F")
-        if grade in distribution:
-            distribution[grade] += 1
-        total_score += score.get("score", 0)
+    for build in completed_builds:
+        # Convert datetime strings
+        if isinstance(build.get('started_at'), str):
+            build['started_at'] = datetime.fromisoformat(build['started_at'])
+        if build.get('completed_at') and isinstance(build['completed_at'], str):
+            build['completed_at'] = datetime.fromisoformat(build['completed_at'])
+        
+        score = calculate_health_score(build)
+        grade = get_health_grade(score)
+        scores.append(score)
+        grades[grade] = grades.get(grade, 0) + 1
+    
+    avg_score = int(sum(scores) / len(scores)) if scores else 0
     
     return {
-        "grade_distribution": distribution,
-        "average_score": total_score // len(scores) if scores else 0,
-        "total_assessments": len(scores)
+        "average_health_score": avg_score,
+        "grade_distribution": grades,
+        "total_builds": len(completed_builds)
     }
 
 
 @router.get("/success-rate")
 async def get_success_rate_analytics(days: int = 30):
     """Get build success rate over time"""
-    end_date = datetime.now(timezone.utc)
-    start_date = end_date - timedelta(days=days)
+    start_date = datetime.now(timezone.utc) - timedelta(days=days)
     
-    total = await db.build_history.count_documents({
+    builds = await db.build_history.find({
         "started_at": {"$gte": start_date.isoformat()}
-    })
+    }, {"_id": 0}).to_list(1000)
     
-    completed = await db.build_history.count_documents({
-        "started_at": {"$gte": start_date.isoformat()},
-        "status": "completed"
-    })
+    total = len(builds)
+    completed = sum(1 for b in builds if b.get('status') == 'completed')
+    failed = sum(1 for b in builds if b.get('status') == 'failed')
     
-    failed = await db.build_history.count_documents({
-        "started_at": {"$gte": start_date.isoformat()},
-        "status": "failed"
-    })
+    success_rate = (completed / total * 100) if total > 0 else 0
     
     return {
-        "period": f"Last {days} days",
+        "period_days": days,
         "total_builds": total,
         "completed": completed,
         "failed": failed,
-        "success_rate": round((completed / total * 100) if total > 0 else 0, 2),
-        "failure_rate": round((failed / total * 100) if total > 0 else 0, 2)
+        "success_rate": round(success_rate, 2)
     }

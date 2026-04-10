@@ -5,11 +5,13 @@ from fastapi import APIRouter, HTTPException
 from typing import Dict, Any
 
 from services.version_matrix import (
-    get_runtime_version_matrix,
-    get_base_image_tag_catalog,
-    validate_runtime_config,
-    get_cis_level_configs,
-    get_sbom_format_options
+    RUNTIME_VERSIONS,
+    BASE_IMAGE_TAGS,
+    CIS_LEVELS,
+    SBOM_FORMATS,
+    SBOM_SCAN_DEPTHS,
+    get_runtime_versions,
+    validate_runtime_config
 )
 
 router = APIRouter(tags=["config"])
@@ -19,68 +21,67 @@ router = APIRouter(tags=["config"])
 async def get_supported_architectures():
     """Get supported build architectures"""
     return {
-        "architectures": [
-            {"id": "amd64", "name": "AMD64/x86_64", "description": "Standard x86 64-bit"},
-            {"id": "arm64", "name": "ARM64/aarch64", "description": "ARM 64-bit (Apple Silicon, AWS Graviton)"}
-        ]
+        "supported": ["amd64", "arm64"],
+        "default": "amd64",
+        "multi_arch_builds": True
     }
 
 
 @router.get("/runtime-versions")
-async def get_runtime_version_matrix_endpoint():
-    """Get all runtime version matrices"""
-    return get_runtime_version_matrix()
+async def get_runtime_version_matrix():
+    """Get complete runtime version and distribution matrix"""
+    return {"runtimes": RUNTIME_VERSIONS}
 
 
 @router.get("/runtime-versions/{runtime}")
 async def get_runtime_specific_versions(runtime: str):
-    """Get versions for a specific runtime"""
-    matrix = get_runtime_version_matrix()
-    if runtime not in matrix:
-        raise HTTPException(status_code=404, detail=f"Runtime '{runtime}' not found")
-    return {runtime: matrix[runtime]}
+    """Get versions and distributions for a specific runtime"""
+    data = get_runtime_versions(runtime)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Runtime {runtime} not found")
+    return data
 
 
 @router.get("/base-image-tags")
-async def get_base_image_tag_catalog_endpoint():
-    """Get all base image tag options"""
-    return get_base_image_tag_catalog()
+async def get_base_image_tag_catalog():
+    """Get available tags for base images"""
+    return {"base_images": BASE_IMAGE_TAGS}
 
 
 @router.get("/base-image-tags/{base_image}")
 async def get_specific_base_tags(base_image: str):
     """Get tags for a specific base image"""
-    catalog = get_base_image_tag_catalog()
-    if base_image not in catalog:
-        raise HTTPException(status_code=404, detail=f"Base image '{base_image}' not found")
-    return {base_image: catalog[base_image]}
+    data = BASE_IMAGE_TAGS.get(base_image)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Base image {base_image} not found")
+    return data
 
 
 @router.post("/validate-runtime-config")
 async def validate_runtime_configuration(config: Dict[str, Any]):
-    """Validate a runtime configuration combination"""
-    result = validate_runtime_config(
-        runtime=config.get("runtime"),
-        version=config.get("version"),
-        distribution=config.get("distribution"),
-        base_image=config.get("base_image"),
-        base_tag=config.get("base_tag"),
-        fips_enabled=config.get("fips_enabled", False)
-    )
+    """Validate runtime configuration for compatibility"""
+    runtime = config.get("runtime")
+    version = config.get("runtime_version")
+    distribution = config.get("runtime_distribution")
+    fips_mode = config.get("fips_mode_enabled", False)
     
-    if not result["valid"]:
-        raise HTTPException(status_code=400, detail=result["errors"])
+    if not all([runtime, version, distribution]):
+        raise HTTPException(status_code=400, detail="Missing required fields: runtime, runtime_version, runtime_distribution")
     
-    return result
+    validation = validate_runtime_config(runtime, version, distribution, fips_mode)
+    return validation
 
 
 @router.get("/cis-levels")
-async def get_cis_levels():
-    """Get CIS benchmark level configurations"""
-    return {"levels": get_cis_level_configs()}
+async def get_cis_benchmark_levels():
+    """Get CIS Benchmark level configurations"""
+    return {"levels": CIS_LEVELS}
 
 
 @router.get("/sbom-formats")
-async def get_sbom_formats():
+async def get_sbom_format_options():
     """Get SBOM format and scan depth options"""
-    return get_sbom_format_options()
+    return {
+        "formats": SBOM_FORMATS,
+        "scan_depths": SBOM_SCAN_DEPTHS
+    }

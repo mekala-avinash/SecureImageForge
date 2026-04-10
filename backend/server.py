@@ -96,6 +96,23 @@ app = FastAPI(title="SecureImage Forge API")
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
+# Import modular route files
+from routes.analytics import router as analytics_router
+from routes.config import router as config_router
+from routes.policies import router as policies_router
+from routes.registries import router as registries_router
+from routes.webhooks import router as webhooks_router, set_webhook_manager
+
+# Include modular routers (these replace inline routes below)
+api_router.include_router(analytics_router)
+api_router.include_router(config_router)
+api_router.include_router(policies_router)
+api_router.include_router(registries_router)
+api_router.include_router(webhooks_router)
+
+# Set the webhook manager for the webhooks router
+set_webhook_manager(webhook_manager)
+
 # Models
 class BuildConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -850,52 +867,7 @@ async def get_remediation_suggestions(build_id: str):
         "cis_benchmark": cis_score
     }
 
-# Registry Management
-@api_router.post("/registries", response_model=Registry)
-async def create_registry(registry: RegistryCreate):
-    """Add a new container registry"""
-    registry_obj = Registry(**registry.model_dump())
-    registry_dict = registry_obj.model_dump()
-    registry_dict['created_at'] = registry_dict['created_at'].isoformat()
-    
-    await db.registries.insert_one(registry_dict)
-    return registry_obj
-
-@api_router.get("/registries", response_model=List[Registry])
-async def get_registries():
-    """Get all configured registries"""
-    registries = await db.registries.find({}, {"_id": 0}).to_list(100)
-    
-    for registry in registries:
-        if isinstance(registry.get('created_at'), str):
-            registry['created_at'] = datetime.fromisoformat(registry['created_at'])
-    
-    return registries
-
-@api_router.delete("/registries/{registry_id}")
-async def delete_registry(registry_id: str):
-    """Delete a registry"""
-    result = await db.registries.delete_one({"id": registry_id})
-    
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Registry not found")
-    
-    return {"message": "Registry deleted successfully"}
-
-@api_router.post("/registries/{registry_id}/test")
-async def test_registry(registry_id: str):
-    """Test registry connection"""
-    registry = await db.registries.find_one({"id": registry_id}, {"_id": 0})
-    
-    if not registry:
-        raise HTTPException(status_code=404, detail="Registry not found")
-    
-    # Simulate registry test
-    return {
-        "registry_id": registry_id,
-        "status": "connected",
-        "message": f"Successfully connected to {registry['type']} registry at {registry['url']}"
-    }
+# Registry Management - NOW SERVED FROM routes/registries.py
 
 @api_router.post("/builds/{build_id}/push/{registry_id}")
 async def push_to_registry(build_id: str, registry_id: str):
@@ -922,225 +894,11 @@ async def push_to_registry(build_id: str, registry_id: str):
         "message": f"Image pushed to {registry['name']}"
     }
 
-# Analytics Endpoints
-@api_router.get("/analytics/trends")
-async def get_analytics_trends(days: int = 30):
-    """Get build and health score trends"""
-    start_date = datetime.now(timezone.utc) - timedelta(days=days)
-    
-    # Get builds from the period
-    builds = await db.build_history.find({
-        "started_at": {"$gte": start_date.isoformat()}
-    }, {"_id": 0}).to_list(1000)
-    
-    # Convert datetime strings
-    for build in builds:
-        if isinstance(build.get('started_at'), str):
-            build['started_at'] = datetime.fromisoformat(build['started_at'])
-    
-    # Group by day
-    daily_data = {}
-    for build in builds:
-        day = build['started_at'].date().isoformat()
-        if day not in daily_data:
-            daily_data[day] = {
-                "date": day,
-                "total": 0,
-                "completed": 0,
-                "failed": 0,
-                "avg_compliance": 0,
-                "compliance_scores": []
-            }
-        
-        daily_data[day]["total"] += 1
-        if build.get('status') == 'completed':
-            daily_data[day]["completed"] += 1
-        elif build.get('status') == 'failed':
-            daily_data[day]["failed"] += 1
-        
-        if build.get('compliance_score'):
-            daily_data[day]["compliance_scores"].append(build['compliance_score'])
-    
-    # Calculate averages
-    trend_data = []
-    for day_data in daily_data.values():
-        if day_data["compliance_scores"]:
-            day_data["avg_compliance"] = int(sum(day_data["compliance_scores"]) / len(day_data["compliance_scores"]))
-        day_data.pop("compliance_scores")
-        trend_data.append(day_data)
-    
-    trend_data.sort(key=lambda x: x["date"])
-    
-    return {
-        "period_days": days,
-        "trend_data": trend_data
-    }
-
-@api_router.get("/analytics/vulnerabilities")
-async def get_vulnerability_analytics():
-    """Get vulnerability trends across all builds"""
-    completed_builds = await db.build_history.find({
-        "status": "completed",
-        "vulnerability_count": {"$exists": True}
-    }, {"_id": 0}).to_list(1000)
-    
-    total_vulns = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-    vuln_by_runtime = {}
-    
-    for build in completed_builds:
-        vuln_count = build.get('vulnerability_count', {})
-        for severity in total_vulns.keys():
-            total_vulns[severity] += vuln_count.get(severity, 0)
-        
-        # Get config to find runtime
-        config = await db.build_configs.find_one({"id": build['config_id']}, {"_id": 0})
-        if config:
-            runtime = config.get('runtime', 'unknown')
-            if runtime not in vuln_by_runtime:
-                vuln_by_runtime[runtime] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-            
-            for severity in total_vulns.keys():
-                vuln_by_runtime[runtime][severity] += vuln_count.get(severity, 0)
-    
-    return {
-        "total_vulnerabilities": total_vulns,
-        "by_runtime": vuln_by_runtime,
-        "total_builds_analyzed": len(completed_builds)
-    }
-
-@api_router.get("/analytics/health-scores")
-async def get_health_score_analytics():
-    """Get health score distribution and trends"""
-    completed_builds = await db.build_history.find({
-        "status": "completed"
-    }, {"_id": 0}).to_list(1000)
-    
-    scores = []
-    grades = {"A": 0, "B": 0, "C": 0, "D": 0, "F": 0}
-    
-    for build in completed_builds:
-        # Convert datetime strings
-        if isinstance(build.get('started_at'), str):
-            build['started_at'] = datetime.fromisoformat(build['started_at'])
-        if build.get('completed_at') and isinstance(build['completed_at'], str):
-            build['completed_at'] = datetime.fromisoformat(build['completed_at'])
-        
-        score = calculate_health_score(build)
-        grade = get_health_grade(score)
-        scores.append(score)
-        grades[grade] = grades.get(grade, 0) + 1
-    
-    avg_score = int(sum(scores) / len(scores)) if scores else 0
-    
-    return {
-        "average_health_score": avg_score,
-        "grade_distribution": grades,
-        "total_builds": len(completed_builds)
-    }
-
-@api_router.get("/analytics/success-rate")
-async def get_success_rate_analytics(days: int = 30):
-    """Get build success rate over time"""
-    start_date = datetime.now(timezone.utc) - timedelta(days=days)
-    
-    builds = await db.build_history.find({
-        "started_at": {"$gte": start_date.isoformat()}
-    }, {"_id": 0}).to_list(1000)
-    
-    total = len(builds)
-    completed = sum(1 for b in builds if b.get('status') == 'completed')
-    failed = sum(1 for b in builds if b.get('status') == 'failed')
-    
-    success_rate = (completed / total * 100) if total > 0 else 0
-    
-    return {
-        "period_days": days,
-        "total_builds": total,
-        "completed": completed,
-        "failed": failed,
-        "success_rate": round(success_rate, 2)
-    }
+# Analytics Endpoints - NOW SERVED FROM routes/analytics.py
 
 # ============ PHASE 3 ENDPOINTS ============
 
-# Policy Management
-@api_router.post("/policies", response_model=Policy)
-async def create_policy(policy: PolicyCreate):
-    """Create a new custom policy"""
-    policy_obj = Policy(**policy.model_dump())
-    policy_dict = policy_obj.model_dump()
-    policy_dict['created_at'] = policy_dict['created_at'].isoformat()
-    
-    await db.policies.insert_one(policy_dict)
-    return policy_obj
-
-@api_router.get("/policies", response_model=List[Policy])
-async def get_policies():
-    """Get all policies"""
-    policies = await db.policies.find({}, {"_id": 0}).to_list(1000)
-    
-    for policy in policies:
-        if isinstance(policy.get('created_at'), str):
-            policy['created_at'] = datetime.fromisoformat(policy['created_at'])
-    
-    return policies
-
-@api_router.get("/policies/templates")
-async def get_policy_templates():
-    """Get pre-built policy templates"""
-    return {"templates": POLICY_TEMPLATES}
-
-@api_router.get("/policies/{policy_id}")
-async def get_policy(policy_id: str):
-    """Get specific policy"""
-    policy = await db.policies.find_one({"id": policy_id}, {"_id": 0})
-    
-    if not policy:
-        raise HTTPException(status_code=404, detail="Policy not found")
-    
-    if isinstance(policy.get('created_at'), str):
-        policy['created_at'] = datetime.fromisoformat(policy['created_at'])
-    
-    return policy
-
-@api_router.put("/policies/{policy_id}")
-async def update_policy(policy_id: str, policy_update: PolicyCreate):
-    """Update a policy"""
-    result = await db.policies.update_one(
-        {"id": policy_id},
-        {"$set": policy_update.model_dump()}
-    )
-    
-    if result.modified_count == 0:
-        raise HTTPException(status_code=404, detail="Policy not found")
-    
-    return {"message": "Policy updated successfully"}
-
-@api_router.delete("/policies/{policy_id}")
-async def delete_policy(policy_id: str):
-    """Delete a policy"""
-    result = await db.policies.delete_one({"id": policy_id})
-    
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Policy not found")
-    
-    return {"message": "Policy deleted successfully"}
-
-@api_router.post("/policies/{policy_id}/toggle")
-async def toggle_policy(policy_id: str):
-    """Enable/disable a policy"""
-    policy = await db.policies.find_one({"id": policy_id}, {"_id": 0})
-    
-    if not policy:
-        raise HTTPException(status_code=404, detail="Policy not found")
-    
-    new_state = not policy.get('enabled', True)
-    await db.policies.update_one(
-        {"id": policy_id},
-        {"$set": {"enabled": new_state}}
-    )
-    
-    return {"enabled": new_state}
+# Policy Management - NOW SERVED FROM routes/policies.py
 
 @api_router.post("/builds/{build_id}/evaluate-policies")
 async def evaluate_build_policies(build_id: str):
@@ -1343,79 +1101,9 @@ async def verify_image_signature(image_tag: str):
     
     return verification
 
-# Multi-arch support info
-@api_router.get("/architectures")
-async def get_supported_architectures():
-    """Get list of supported architectures"""
-    return {
-        "supported": ["amd64", "arm64"],
-        "default": "amd64",
-        "multi_arch_builds": True
-    }
-
 # ============ PHASE 4.5 GRANULAR CONTROLS ============
-
-@api_router.get("/runtime-versions")
-async def get_runtime_version_matrix():
-    """Get complete runtime version and distribution matrix"""
-    from services.version_matrix import RUNTIME_VERSIONS
-    return {"runtimes": RUNTIME_VERSIONS}
-
-@api_router.get("/runtime-versions/{runtime}")
-async def get_runtime_specific_versions(runtime: str):
-    """Get versions and distributions for a specific runtime"""
-    from services.version_matrix import get_runtime_versions
-    data = get_runtime_versions(runtime)
-    if not data:
-        raise HTTPException(status_code=404, detail=f"Runtime {runtime} not found")
-    return data
-
-@api_router.get("/base-image-tags")
-async def get_base_image_tag_catalog():
-    """Get available tags for base images"""
-    from services.version_matrix import BASE_IMAGE_TAGS
-    return {"base_images": BASE_IMAGE_TAGS}
-
-@api_router.get("/base-image-tags/{base_image}")
-async def get_specific_base_tags(base_image: str):
-    """Get tags for a specific base image"""
-    from services.version_matrix import BASE_IMAGE_TAGS
-    data = BASE_IMAGE_TAGS.get(base_image)
-    if not data:
-        raise HTTPException(status_code=404, detail=f"Base image {base_image} not found")
-    return data
-
-@api_router.post("/validate-runtime-config")
-async def validate_runtime_configuration(config: Dict[str, Any]):
-    """Validate runtime configuration for compatibility"""
-    from services.version_matrix import validate_runtime_config
-    
-    runtime = config.get("runtime")
-    version = config.get("runtime_version")
-    distribution = config.get("runtime_distribution")
-    fips_mode = config.get("fips_mode_enabled", False)
-    
-    if not all([runtime, version, distribution]):
-        raise HTTPException(status_code=400, detail="Missing required fields: runtime, runtime_version, runtime_distribution")
-    
-    validation = validate_runtime_config(runtime, version, distribution, fips_mode)
-    
-    return validation
-
-@api_router.get("/cis-levels")
-async def get_cis_benchmark_levels():
-    """Get CIS Benchmark level configurations"""
-    from services.version_matrix import CIS_LEVELS
-    return {"levels": CIS_LEVELS}
-
-@api_router.get("/sbom-formats")
-async def get_sbom_format_options():
-    """Get SBOM format and scan depth options"""
-    from services.version_matrix import SBOM_FORMATS, SBOM_SCAN_DEPTHS
-    return {
-        "formats": SBOM_FORMATS,
-        "scan_depths": SBOM_SCAN_DEPTHS
-    }
+# NOTE: These routes are now served from routes/config.py
+# Keeping this comment for reference
 
 # =============================================================================
 # VULNERABILITY REMEDIATION ENDPOINTS (Phase 5 - Auto-Remediation)
@@ -2415,209 +2103,8 @@ async def get_vex_formats():
 
 
 # =============================================================================
-# WEBHOOK MANAGEMENT ENDPOINTS (Phase 4 - ChatOps Integration)
+# WEBHOOK MANAGEMENT ENDPOINTS - NOW SERVED FROM routes/webhooks.py
 # =============================================================================
-
-@api_router.get("/webhooks")
-async def list_webhooks():
-    """List all registered webhooks"""
-    webhooks = webhook_manager.get_webhooks()
-    stats = await get_webhook_delivery_stats()
-    
-    return {
-        "webhooks": webhooks,
-        "stats": stats
-    }
-
-
-@api_router.post("/webhooks")
-async def create_webhook(webhook_data: Dict[str, Any]):
-    """Register a new webhook"""
-    required_fields = ["name", "destination", "url", "events"]
-    for field in required_fields:
-        if field not in webhook_data:
-            raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
-    
-    try:
-        destination = WebhookDestination(webhook_data["destination"])
-    except ValueError:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Invalid destination. Must be one of: {[d.value for d in WebhookDestination]}"
-        )
-    
-    try:
-        events = [WebhookEventType(e) for e in webhook_data["events"]]
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid event type: {e}")
-    
-    config = WebhookConfig(
-        name=webhook_data["name"],
-        destination=destination,
-        url=webhook_data["url"],
-        events=events,
-        channel=webhook_data.get("channel"),
-        secret=webhook_data.get("secret"),
-        enabled=webhook_data.get("enabled", True)
-    )
-    
-    webhook_id = webhook_manager.register_webhook(config)
-    
-    # Store in database for persistence
-    await db.webhooks.update_one(
-        {"id": webhook_id},
-        {"$set": {
-            "id": webhook_id,
-            "name": config.name,
-            "destination": config.destination.value,
-            "url": config.url,
-            "events": [e.value for e in config.events],
-            "channel": config.channel,
-            "enabled": config.enabled,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }},
-        upsert=True
-    )
-    
-    return {
-        "id": webhook_id,
-        "message": f"Webhook '{config.name}' registered successfully"
-    }
-
-
-@api_router.delete("/webhooks/{webhook_id}")
-async def delete_webhook(webhook_id: str):
-    """Delete a webhook"""
-    if webhook_manager.unregister_webhook(webhook_id):
-        await db.webhooks.delete_one({"id": webhook_id})
-        return {"message": "Webhook deleted successfully"}
-    
-    raise HTTPException(status_code=404, detail="Webhook not found")
-
-
-@api_router.patch("/webhooks/{webhook_id}")
-async def update_webhook(webhook_id: str, updates: Dict[str, Any]):
-    """Update webhook configuration"""
-    webhook = webhook_manager.update_webhook(webhook_id, updates)
-    if not webhook:
-        raise HTTPException(status_code=404, detail="Webhook not found")
-    
-    # Update in database
-    await db.webhooks.update_one(
-        {"id": webhook_id},
-        {"$set": updates}
-    )
-    
-    return {"message": "Webhook updated successfully", "webhook": webhook.to_dict()}
-
-
-@api_router.post("/webhooks/{webhook_id}/test")
-async def test_webhook(webhook_id: str):
-    """Send a test event to a webhook"""
-    if webhook_id not in webhook_manager.webhooks:
-        raise HTTPException(status_code=404, detail="Webhook not found")
-    
-    test_payload = {
-        "build_id": "test-build-123",
-        "image_tag": "secureforge/test:latest",
-        "message": "This is a test notification from SecureImage Forge",
-        "detail_url": "https://secureforge.enterprise/test"
-    }
-    
-    # Temporarily enable all events for the test
-    webhook = webhook_manager.webhooks[webhook_id]
-    original_events = webhook.events
-    webhook.events = [WebhookEventType.BUILD_COMPLETED]
-    
-    try:
-        # Use async method for delivery
-        deliveries = await webhook_manager.send_event_async(
-            WebhookEventType.BUILD_COMPLETED,
-            test_payload,
-            sync=True
-        )
-        
-        if deliveries and deliveries[0].get("status") == "success":
-            return {
-                "status": "success",
-                "message": "Test webhook delivered successfully",
-                "delivery": deliveries[0]
-            }
-        else:
-            return {
-                "status": "queued",
-                "message": "Test webhook queued for delivery",
-                "delivery": deliveries[0] if deliveries else None
-            }
-    finally:
-        webhook.events = original_events
-
-
-@api_router.get("/webhooks/events")
-async def list_webhook_events():
-    """List all available webhook event types"""
-    return {
-        "events": [
-            {"id": e.value, "name": e.name, "description": _get_event_description(e)}
-            for e in WebhookEventType
-        ]
-    }
-
-
-@api_router.get("/webhooks/destinations")
-async def list_webhook_destinations():
-    """List supported webhook destinations"""
-    return {
-        "destinations": [
-            {"id": "slack", "name": "Slack", "description": "Slack Incoming Webhooks with Block Kit"},
-            {"id": "microsoft_teams", "name": "Microsoft Teams", "description": "Teams Incoming Webhooks with Adaptive Cards"},
-            {"id": "discord", "name": "Discord", "description": "Discord Webhooks with Embeds"},
-            {"id": "generic_webhook", "name": "Generic HTTP", "description": "Standard HTTP POST with JSON payload"}
-        ]
-    }
-
-
-@api_router.get("/webhooks/delivery-history")
-async def get_webhook_delivery_history(limit: int = 50):
-    """Get webhook delivery history from database"""
-    # Fetch from database
-    deliveries = await get_webhook_deliveries(limit)
-    
-    # Fallback to in-memory if DB is empty
-    if not deliveries:
-        deliveries = webhook_manager.get_delivery_history(limit)
-    
-    # Get stats from database
-    stats = await get_webhook_delivery_stats()
-    
-    return {
-        "deliveries": deliveries,
-        "stats": stats
-    }
-
-
-def _get_event_description(event: WebhookEventType) -> str:
-    """Get description for webhook event type"""
-    descriptions = {
-        WebhookEventType.BUILD_STARTED: "Triggered when a new build starts",
-        WebhookEventType.BUILD_COMPLETED: "Triggered when a build completes successfully",
-        WebhookEventType.BUILD_FAILED: "Triggered when a build fails",
-        WebhookEventType.CRITICAL_CVE_DETECTED: "Triggered when critical vulnerabilities are detected",
-        WebhookEventType.REMEDIATION_APPLIED: "Triggered when auto-remediation is applied",
-        WebhookEventType.REMEDIATION_FAILED: "Triggered when auto-remediation fails",
-        WebhookEventType.IMAGE_DEPRECATED: "Triggered when an image is marked as deprecated",
-        WebhookEventType.IMAGE_TOMBSTONED: "Triggered when an image is tombstoned",
-        WebhookEventType.BASE_IMAGE_UPDATED: "Triggered when a base image update is available",
-        WebhookEventType.POLICY_VIOLATION: "Triggered when a policy violation is detected",
-        WebhookEventType.DRIFT_DETECTED: "Triggered when configuration drift is detected",
-        WebhookEventType.DRIFT_RESOLVED: "Triggered when drift is resolved",
-        WebhookEventType.EXCEPTION_REQUESTED: "Triggered when an exception is requested",
-        WebhookEventType.EXCEPTION_APPROVED: "Triggered when an exception is approved",
-        WebhookEventType.EXCEPTION_REJECTED: "Triggered when an exception is rejected",
-        WebhookEventType.SLSA_ATTESTATION_GENERATED: "Triggered when SLSA attestation is generated",
-        WebhookEventType.VEX_DOCUMENT_GENERATED: "Triggered when VEX document is generated"
-    }
-    return descriptions.get(event, event.value)
 
 
 # Include the router in the main app

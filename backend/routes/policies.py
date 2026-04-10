@@ -7,7 +7,7 @@ from typing import List
 
 from database import db
 from models.policies import Policy, PolicyCreate
-from services.policy_engine import evaluate_all_policies, POLICY_TEMPLATES, get_policy_recommendation
+from services.policy_engine import POLICY_TEMPLATES
 
 router = APIRouter(prefix="/policies", tags=["policies"])
 
