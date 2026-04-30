@@ -1,0 +1,35 @@
+/* Klein Blue control-room theme (matches existing design guidelines). */
+:root {
+    --klein: #002FA7;
+    --signal: #FF3B30;
+    --ink: #0a0a0a;
+    --paper: #fafafa;
+    --rule: #e5e5e5;
+}
+
+* { box-sizing: border-box; }
+
+body, html { margin: 0; height: 100%; font-family: 'IBM Plex Mono', ui-monospace, monospace; background: var(--paper); color: var(--ink); }
+
+.app-shell { display: flex; flex-direction: column; height: 100vh; }
+
+.app-header {
+    border-bottom: 2px solid var(--ink);
+    padding: 16px 24px;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+}
+
+.app-header h1 {
+    margin: 0;
+    font-family: 'Chivo', system-ui, sans-serif;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: var(--klein);
+}
+
+.app-header .tagline { color: #555; text-transform: uppercase; letter-spacing: 0.1em; font-size: 12px; }
+
+.app-body { padding: 24px; }
+.app-body ul { line-height: 1.8; }

@@ -76,6 +76,22 @@ agenthub/agents/youtube/db
 # Build caches
 .cache/
 
+# Rust workspace
+forge/target/
+forge/**/target/
+**/*.rs.bk
+forge/Cargo.lock.bak
+forge/vendor/
+
+# Dioxus desktop
+forge/dist/
+
+# SQLite local data
+*.sqlite
+*.sqlite-journal
+*.db
+*.db-journal
+
 memory/test_credentials.md
 
 # Mobile development

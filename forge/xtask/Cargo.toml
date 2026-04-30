@@ -1,0 +1,16 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Repo automation: license audit, dist bundling, buildkit fetch."
+
+[dependencies]
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+walkdir = { workspace = true }

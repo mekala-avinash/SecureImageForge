@@ -1,0 +1,20 @@
+[package]
+name = "forge-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SecureImage Forge desktop application (Dioxus)."
+
+[[bin]]
+name = "forge-desktop"
+path = "src/main.rs"
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+dioxus = { workspace = true }
+dioxus-desktop = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

@@ -2,6 +2,15 @@
 
 **SecureImage Forge** is an automated pipeline tool designed to build, harden, and verify Docker images for enterprise runtimes. It ensures that every container image produced is "secure by default," meeting rigorous compliance standards.
 
+> ⚠️ **Active rewrite in progress** — the project is being ported from the
+> Python/FastAPI MVP to a multi-platform Rust desktop application using only
+> Apache-2.0 / MIT-licensed components (BuildKit, Trivy, Syft, Cosign, OPA,
+> Dioxus). The Rust workspace lives in [`forge/`](./forge); see
+> [`forge/docs/ARCHITECTURE.md`](./forge/docs/ARCHITECTURE.md) and
+> [`forge/docs/DEVELOPMENT.md`](./forge/docs/DEVELOPMENT.md). The legacy
+> Python implementation under `backend/` and `frontend/` will be removed once
+> Phases 1–3 reach parity.
+
 ## Features
 
 ### Phase 1 MVP (Current)
