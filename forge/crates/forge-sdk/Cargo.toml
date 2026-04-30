@@ -1,0 +1,14 @@
+[package]
+name = "forge-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Typed Rust client for the SecureImage Forge HTTP API."
+
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+url = "2"

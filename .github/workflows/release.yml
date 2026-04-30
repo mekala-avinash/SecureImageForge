@@ -1,0 +1,145 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+  id-token: write    # cosign keyless
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,     target: aarch64-apple-darwin,        platform: darwin/arm64 }
+          - { os: macos-13,         target: x86_64-apple-darwin,         platform: darwin/amd64 }
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,    platform: linux/amd64  }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu,   platform: linux/arm64  }
+          - { os: windows-latest,   target: x86_64-pc-windows-msvc,      platform: windows/amd64 }
+    defaults:
+      run:
+        working-directory: forge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: forge
+      - uses: sigstore/cosign-installer@v3
+      - uses: anchore/sbom-action/download-syft@v0
+
+      - name: install cargo-auditable
+        run: cargo install cargo-auditable --locked
+
+      # `cargo auditable build` embeds the locked dependency graph into the
+      # binary so downstream consumers can run `cargo audit bin <forge>` and
+      # `syft` can extract a real CycloneDX SBOM directly from the artifact.
+      - name: build forge-cli + forge-desktop (auditable)
+        run: cargo auditable build --release -p forge-cli -p forge-desktop --target ${{ matrix.target }}
+
+      - name: stage artifacts + sbom + cosign attest
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          MATRIX_TARGET: ${{ matrix.target }}
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ext=""
+          case "$MATRIX_PLATFORM" in windows/*) ext=".exe";; esac
+          safe_platform="${MATRIX_PLATFORM//\//-}"
+          for label in cli desktop; do
+            bin_name="forge${ext}"
+            [ "$label" = "desktop" ] && bin_name="forge-desktop${ext}"
+            src="target/${MATRIX_TARGET}/release/${bin_name}"
+            safe_name="forge-${label}-${safe_platform}${ext}"
+            cp "$src" "dist/${safe_name}"
+
+            # CycloneDX SBOM extracted from the auditable binary itself.
+            syft "dist/${safe_name}" -o cyclonedx-json="dist/${safe_name}.cdx.json"
+
+            # Detached cosign signature.
+            cosign sign-blob --yes \
+              --output-signature "dist/${safe_name}.sig" \
+              "dist/${safe_name}"
+
+            # In-toto attestation binding the SBOM to the artifact.
+            cosign attest-blob --yes \
+              --predicate "dist/${safe_name}.cdx.json" \
+              --type cyclonedx \
+              --output-attestation "dist/${safe_name}.intoto.jsonl" \
+              "dist/${safe_name}"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.target }}
+          path: forge/dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: sigstore/cosign-installer@v3
+
+      - name: assemble release manifest.json
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-$REF_NAME}"
+          version="${tag#v}"
+          published_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          {
+            printf '{"version":"%s","published_at":"%s","channel":"stable","min_required":null,"releases":[' "$version" "$published_at"
+            first=true
+            for f in dist/forge-desktop-*; do
+              case "$f" in *.sig|*.cdx.json|*.intoto.jsonl) continue;; esac
+              base=$(basename "$f")
+              sha=$(sha256sum "$f" | awk '{print $1}')
+              size=$(stat -c '%s' "$f" 2>/dev/null || stat -f '%z' "$f")
+              platform=$(echo "$base" | sed -E 's/^forge-desktop-(.+)$/\1/' | sed 's/\.exe$//' | tr '-' '/')
+              entry=$(printf '{"platform":"%s","url":"%s","sha256":"%s","signature_url":"%s.sig","size_bytes":%s}' "$platform" "$base" "$sha" "$base" "$size")
+              if [ "$first" = "true" ]; then first=false; else printf ','; fi
+              printf '%s' "$entry"
+            done
+            printf ']}'
+          } > manifest.json
+          cat manifest.json
+
+      - name: cosign sign manifest
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: cosign sign-blob --yes --output-signature manifest.json.sig manifest.json
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/**
+            manifest.json
+            manifest.json.sig
+          generate_release_notes: true

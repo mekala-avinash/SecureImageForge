@@ -1,14 +1,40 @@
 //! forge-core: domain model and orchestration primitives for SecureImage Forge.
 //!
-//! This crate is intentionally pure-Rust and side-effect free at the API layer;
-//! external tool integrations (buildkit, trivy, syft, cosign, opa) live in
-//! sibling modules and are invoked through the `tooling` trait abstractions so
-//! they can be mocked in unit tests and swapped per-platform.
+//! Adapter layout:
+//!   * `tooling` — async traits for ImageBuilder, Scanner, SbomGenerator,
+//!     Signer, PolicyEngine.
+//!   * `process` — `ProcessRunner` abstraction (real + mock) that all
+//!     subprocess-driven adapters use.
+//!   * `dockerfile` — pure Dockerfile generation from a `BuildSpec`.
+//!   * `adapters` — concrete buildkit/trivy/syft/cosign/opa implementations.
+//!   * `repo` — SQLite-backed persistence for `BuildRecord`s.
+//!   * `orchestrator` — drives a build through generate → build → scan → sbom
+//!     → sign → policy, persisting the record.
 
+pub mod adapters;
+pub mod audit;
+pub mod config;
+pub mod dockerfile;
 pub mod domain;
+pub mod drift;
 pub mod error;
+pub mod logs;
+pub mod metrics;
+pub mod orchestrator;
+#[cfg(feature = "pg")]
+pub mod pg_storage;
+pub mod process;
+pub mod provenance;
+pub mod rbac;
+pub mod registry;
+pub mod repo;
+pub mod sarif;
 pub mod storage;
+pub mod team;
 pub mod telemetry;
+pub mod toolchain;
 pub mod tooling;
+pub mod updater;
+pub mod webhooks;
 
 pub use error::{Error, Result};

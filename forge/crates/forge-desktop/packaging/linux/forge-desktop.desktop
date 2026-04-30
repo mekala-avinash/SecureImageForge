@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=SecureImage Forge
+Comment=Build, harden, and verify container images
+Exec=/usr/bin/forge-desktop
+Icon=secureimage-forge
+Terminal=false
+Categories=Development;Security;
+Keywords=container;image;security;sbom;cosign;buildkit;

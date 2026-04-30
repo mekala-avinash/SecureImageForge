@@ -1,0 +1,29 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/forge"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 8
+    groups:
+      tokio:
+        patterns:
+          - "tokio*"
+          - "tracing*"
+      sqlx:
+        patterns:
+          - "sqlx*"
+      axum:
+        patterns:
+          - "axum*"
+          - "tower*"
+          - "hyper*"
+      sigstore:
+        patterns:
+          - "cosign*"
+          - "sigstore*"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

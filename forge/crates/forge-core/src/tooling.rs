@@ -1,31 +1,55 @@
-//! Trait abstractions over external Apache-2.0 tools.
-//!
-//! Concrete adapters are filled in during Phase 1. The trait surface lives here
-//! so dependent crates (cli, api, desktop) can compile against the contract
-//! without pulling in process-spawning code.
-//!
-//! Phase 0 keeps these synchronous to avoid an `async-trait` dep until the
-//! adapters land. Phase 1 promotes them to async with `async_trait`.
+//! Async trait abstractions over external Apache-2.0 tools.
 
-use crate::domain::{BuildRecord, BuildSpec, Sbom, ScanResult};
+use async_trait::async_trait;
+
+use crate::domain::{BuildSpec, Sbom, ScanResult};
 use crate::Result;
 
+/// Output of a successful image build, prior to scan/sign/sbom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltImage {
+    /// `sha256:...` digest reported by the build engine.
+    pub digest: String,
+    /// Local OCI tag or registry reference.
+    pub reference: String,
+    /// Aggregated build log (line-buffered).
+    pub log: String,
+}
+
+#[async_trait]
 pub trait ImageBuilder: Send + Sync {
-    fn build(&self, spec: &BuildSpec) -> Result<BuildRecord>;
+    async fn build(&self, spec: &BuildSpec, dockerfile: &str) -> Result<BuiltImage>;
 }
 
+#[async_trait]
 pub trait Scanner: Send + Sync {
-    fn scan(&self, image_ref: &str) -> Result<ScanResult>;
+    async fn scan(&self, image_ref: &str) -> Result<ScanResult>;
 }
 
+#[async_trait]
 pub trait SbomGenerator: Send + Sync {
-    fn generate(&self, image_ref: &str) -> Result<Sbom>;
+    async fn generate(&self, image_ref: &str) -> Result<Sbom>;
 }
 
+#[async_trait]
 pub trait Signer: Send + Sync {
-    fn sign(&self, image_ref: &str) -> Result<()>;
+    async fn sign(&self, image_ref: &str) -> Result<()>;
 }
 
+#[async_trait]
+pub trait Attestor: Send + Sync {
+    async fn attest(&self, image_ref: &str, predicate_json: &str) -> Result<()>;
+}
+
+/// Result returned by the policy engine — separate enum lets the orchestrator
+/// distinguish "no findings" from "findings but allowed by waiver".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyDecision {
+    Allow,
+    Deny { reasons: Vec<String> },
+}
+
+#[async_trait]
 pub trait PolicyEngine: Send + Sync {
-    fn evaluate(&self, record: &BuildRecord) -> Result<()>;
+    async fn evaluate(&self, input: serde_json::Value) -> Result<PolicyDecision>;
 }

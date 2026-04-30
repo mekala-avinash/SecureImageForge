@@ -75,11 +75,16 @@ All bundled external tools are Apache 2.0:
 
 ## Phase plan
 
-| Phase | Scope |
-|---|---|
-| **0 — Foundation** *(this PR)* | Workspace, crate skeletons, CI, license gate |
-| 1 — Core engine | BuildKit/Trivy/Syft/Cosign/OPA adapters; SQLite migrations live |
-| 2 — CLI | All subcommands operational with json/sarif output, completions |
-| 3 — Desktop | Full Dioxus UI parity with old React dashboard; auto-updater; signed installers |
-| 4 — Enterprise | `forge serve`, multi-arch, registries, SLSA L3, RBAC, audit log, drift |
-| 5 — QA / Release | Integration tests, E2E, ≥80% coverage, reproducible release pipeline |
+| Phase | Scope | Status |
+|---|---|---|
+| 0 — Foundation | Workspace, crate skeletons, CI, license gate | ✅ landed |
+| 1 — Core engine | BuildKit/Trivy/Syft/Cosign/OPA adapters; SQLite migrations live; orchestrator | ✅ landed |
+| 2 — CLI + bundled toolchain | Config file, persisted logs, SARIF, registry push/target, `forge doctor`, completions, `xtask bundle-buildkit` (Apache-2.0 pinned versions), CLI integration tests | ✅ landed |
+| 3 — Desktop | Dioxus shell with Dashboard / Builds / New build / Build detail / Doctor views; in-process orchestrator dispatch (no HTTP); auto-refresh polling; Klein-blue control-room theme | ✅ landed |
+| 3.5 — Desktop polish | Cosign-signed update manifest + in-app `Settings → Check for updates`, tray menu (show / update / quit), `xtask dist` with cosign sign-blob, macOS notarize.sh + entitlements, Windows NSIS + Authenticode template, Linux `.deb` via fpm, tag-driven release workflow | ✅ landed |
+| 4 — Enterprise | `forge serve` axum daemon + OpenAPI, RBAC roles + bearer-token principals, append-only audit log, in-toto SLSA L3 provenance, registry auth (basic / token / cred-helper), Grype scanner + `MergedScanner`, drift detection scheduler, `forge principals` admin CLI | ✅ landed |
+| 4.5 — Enterprise polish | Orchestrator uses MergedScanner, cosign attests provenance, drift scheduler config surface, `/v1/builds/{id}/start` API dispatch, RBAC role matrix tests | ✅ landed |
+| 5 — QA / Release | `xtask coverage` with 80% floor (cargo-llvm-cov), proptest invariants for Dockerfile generator, full orchestrator e2e test (MergedScanner + provenance), expanded RBAC + drift API tests, `cargo auditable` builds + cyclonedx SBOMs + cosign attest in release.yml, CodeQL + dependabot, coverage CI workflow | ✅ landed |
+| 6 — Operations & integrations | Storage backend discriminator (sqlite + postgres URL parsing), Prometheus `/metrics` + axum middleware, OTLP scaffold, SSE log streaming, HMAC-signed webhook event sink, `forge-sdk` typed Rust client | ✅ landed |
+| 6.5 — Postgres team mode | Postgres connection pool + migrations + read-mirror `PgBuildRepo` (gated on `pg` feature), full OTLP HTTP/protobuf exporter via `tracing-opentelemetry` (gated on `otlp` feature), persistent webhook retry queue with exponential backoff worker, SDK `RetryPolicy` middleware | ✅ landed |
+| 7 — Postgres write parity | Per-table Any-driver adapters for scans/sboms/drift/provenance, write-path tests against a live Postgres, scheduler config surface for the webhook worker | next |
