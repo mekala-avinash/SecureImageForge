@@ -154,12 +154,19 @@ impl Default for FeatureFlagsSection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildkitSection {
     pub addr: String,
+    #[serde(default = "default_buildkit_managed")]
+    pub managed: bool,
+}
+
+fn default_buildkit_managed() -> bool {
+    true
 }
 
 impl Default for BuildkitSection {
     fn default() -> Self {
         Self {
             addr: "unix:///run/buildkit/buildkitd.sock".into(),
+            managed: true,
         }
     }
 }
@@ -227,6 +234,9 @@ impl Config {
     pub fn with_env_overrides(mut self) -> Self {
         if let Ok(addr) = std::env::var("FORGE_BUILDKIT_ADDR") {
             self.buildkit.addr = addr;
+        }
+        if let Ok(managed) = std::env::var("FORGE_BUILDKIT_MANAGED") {
+            self.buildkit.managed = matches!(managed.as_str(), "1" | "true" | "TRUE" | "yes");
         }
         if let Ok(prefix) = std::env::var("FORGE_VENDOR_PREFIX") {
             self.vendor.prefix = Some(PathBuf::from(prefix));

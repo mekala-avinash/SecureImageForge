@@ -30,15 +30,41 @@ pub struct DriftSnapshot {
     pub findings_count: usize,
 }
 
-pub struct DriftDetector {
-    pub repo: BuildRepo,
-    pub storage: Storage,
-    pub scanner: Arc<dyn Scanner>,
-    pub audit: AuditLog,
+#[async_trait::async_trait]
+pub trait DriftDetector: Send + Sync {
+    async fn rescan_one(&self, build_id: Uuid, image_ref: &str) -> Result<DriftSnapshot>;
+    async fn list(&self, build_id: Uuid, limit: i64) -> Result<Vec<DriftSnapshot>>;
 }
 
-impl DriftDetector {
-    pub async fn rescan_one(&self, build_id: Uuid, image_ref: &str) -> Result<DriftSnapshot> {
+pub struct SqliteDriftDetector {
+    pub repo: Arc<dyn BuildRepo>,
+    pub storage: Storage,
+    pub scanner: Arc<dyn Scanner>,
+    pub audit: Arc<dyn AuditLog>,
+}
+
+impl SqliteDriftDetector {
+    async fn persist(&self, snap: &DriftSnapshot, scan: &ScanResult) -> Result<()> {
+        let findings = serde_json::to_string(&scan.findings)?;
+        sqlx::query(
+            r#"INSERT INTO drift_snapshots (build_id, scanned_at, scanner, findings, new_critical, new_high)
+               VALUES (?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&snap.build_id)
+        .bind(&snap.scanned_at)
+        .bind(&snap.scanner)
+        .bind(findings)
+        .bind(snap.new_critical)
+        .bind(snap.new_high)
+        .execute(self.storage.pool())
+        .await?;
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DriftDetector for SqliteDriftDetector {
+    async fn rescan_one(&self, build_id: Uuid, image_ref: &str) -> Result<DriftSnapshot> {
         let baseline = self
             .repo
             .get_scan(build_id)
@@ -64,7 +90,7 @@ impl DriftDetector {
         Ok(snapshot)
     }
 
-    pub async fn list(&self, build_id: Uuid, limit: i64) -> Result<Vec<DriftSnapshot>> {
+    async fn list(&self, build_id: Uuid, limit: i64) -> Result<Vec<DriftSnapshot>> {
         let rows = sqlx::query(
             r#"SELECT id, build_id, scanner, scanned_at, findings, new_critical, new_high
                FROM drift_snapshots WHERE build_id = ? ORDER BY id DESC LIMIT ?"#,
@@ -92,29 +118,13 @@ impl DriftDetector {
             .collect())
     }
 
-    async fn persist(&self, snap: &DriftSnapshot, scan: &ScanResult) -> Result<()> {
-        let findings = serde_json::to_string(&scan.findings)?;
-        sqlx::query(
-            r#"INSERT INTO drift_snapshots (build_id, scanned_at, scanner, findings, new_critical, new_high)
-               VALUES (?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(&snap.build_id)
-        .bind(&snap.scanned_at)
-        .bind(&snap.scanner)
-        .bind(findings)
-        .bind(snap.new_critical)
-        .bind(snap.new_high)
-        .execute(self.storage.pool())
-        .await?;
-        Ok(())
-    }
 }
 
 /// Schedule periodic rescans. Lives in core so the API daemon can run it
 /// directly without re-implementing it.
-pub async fn run_scheduler(detector: Arc<DriftDetector>, interval: Duration) {
+pub async fn run_scheduler(detector: Arc<dyn DriftDetector>, repo: Arc<dyn BuildRepo>, interval: Duration) {
     loop {
-        match detector.repo.drift_targets(500).await {
+        match repo.drift_targets(500).await {
             Ok(targets) => {
                 for (id, image_ref) in targets {
                     if let Err(e) = detector.rescan_one(id, &image_ref).await {
@@ -169,7 +179,7 @@ pub struct SeveritySet {
     pub high: BTreeSet<String>,
 }
 
-fn ids_by_severity(r: &ScanResult) -> SeveritySet {
+pub fn ids_by_severity(r: &ScanResult) -> SeveritySet {
     let mut s = SeveritySet::default();
     for f in &r.findings {
         match f.severity {

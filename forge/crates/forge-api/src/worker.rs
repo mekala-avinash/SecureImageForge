@@ -29,7 +29,7 @@ async fn run_one(state: &ApiState, worker_id: &str) -> anyhow::Result<()> {
     if !state.config.features.durable_queue {
         return Ok(());
     }
-    let queue: &BuildQueueRepo = &state.queue;
+    let queue: &std::sync::Arc<dyn BuildQueueRepo> = &state.queue;
     let lease = queue
         .lease_next(worker_id, state.config.workers.lease_seconds)
         .await?;
@@ -44,8 +44,33 @@ async fn run_one(state: &ApiState, worker_id: &str) -> anyhow::Result<()> {
         .get_record_in_project(&job.project_id, build_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("missing build for job {}", job.id))?;
-    let orchestrator = state.orchestrator();
-    let result = orchestrator.run_existing(record).await;
+    let orchestrator = state.orchestrator().await;
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let cancel_token_clone = cancel_token.clone();
+    let state_clone = state.clone();
+    
+    let poller = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            if let Ok(Some(summary)) = state_clone.builds.get_summary(build_id).await {
+                if summary.status == "cancelled" {
+                    cancel_token_clone.cancel();
+                    break;
+                }
+            }
+        }
+    });
+
+    let result = tokio::select! {
+        res = orchestrator.run_existing(record) => {
+            poller.abort();
+            res
+        }
+        _ = cancel_token.cancelled() => {
+            poller.abort();
+            Err(forge_core::Error::Internal(anyhow::anyhow!("build cancelled by user")))
+        }
+    };
     match result {
         Ok(outcome) => {
             if outcome.record.status == BuildStatus::Succeeded {

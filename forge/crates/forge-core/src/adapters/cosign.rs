@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::process::{resolve_tool, ProcessRunner, ProcessSpec};
-use crate::tooling::{Attestor, Signer};
+use crate::tooling::{Attestor, Signer, Verifier};
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, Default)]
@@ -89,6 +89,32 @@ impl Attestor for CosignSigner {
                     .arg("slsaprovenance"),
             )
             .arg(image_ref);
+
+        let out = self.runner.run(spec).await?;
+        if out.status != 0 {
+            return Err(Error::ToolFailure {
+                tool: "cosign".into(),
+                code: out.status,
+                stderr: out.stderr,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Verifier for CosignSigner {
+    async fn verify(&self, image_ref: &str) -> Result<()> {
+        let cosign = self.cosign()?;
+        let mut spec = ProcessSpec::new(cosign.to_string_lossy().to_string())
+            .arg("verify");
+        
+        if let Some(key) = &self.config.key_path {
+            spec = spec.arg("--key").arg(key.to_string_lossy().to_string());
+        } else {
+            spec = self.auth_args(spec);
+        }
+        spec = spec.arg(image_ref);
 
         let out = self.runner.run(spec).await?;
         if out.status != 0 {

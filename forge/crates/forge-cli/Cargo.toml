@@ -10,7 +10,7 @@ name = "forge"
 path = "src/main.rs"
 
 [dependencies]
-forge-core = { path = "../forge-core" }
+forge-core = { path = "../forge-core", features = ["pg"] }
 forge-api = { path = "../forge-api" }
 clap = { workspace = true }
 clap_complete = { workspace = true }

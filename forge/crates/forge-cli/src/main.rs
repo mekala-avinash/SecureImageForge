@@ -258,50 +258,125 @@ async fn main() -> Result<()> {
         cfg.vendor.prefix = Some(prefix.clone());
     }
 
-    let db_path = dir.join("forge.sqlite");
-    let storage = Storage::open(&db_path)
-        .await
-        .with_context(|| format!("opening db at {}", db_path.display()))?;
-    let repo = BuildRepo::new(storage.clone());
-    let logs = LogStore::new(dir.join("logs"));
-    let toolchain = Toolchain::new(cfg.vendor.prefix.clone());
+    let database_url = cfg.storage.database_url.as_deref().unwrap_or("sqlite://forge.sqlite");
+    let backend = forge_core::storage::Backend::detect(Some(database_url));
+
+    let toolchain = std::sync::Arc::new(Toolchain::new(cfg.vendor.prefix.clone()));
+
+    let (repo, logs, audit, principals, provenance, team, scopes, queue, drift, storage_sqlite) = match backend {
+        forge_core::storage::Backend::Postgres => {
+            let pg_storage = forge_core::pg_storage::PgStorage::open(database_url).await.context("connecting to postgres")?;
+            (
+                std::sync::Arc::new(forge_core::pg_storage::PgBuildRepo::new(pg_storage.clone())) as std::sync::Arc<dyn BuildRepo>,
+                std::sync::Arc::new(forge_core::logs::FileLogStore::new(dir.join("logs"))) as std::sync::Arc<dyn LogStore>,
+                std::sync::Arc::new(forge_core::pg_storage::PgAuditLog::new(pg_storage.clone())) as std::sync::Arc<dyn forge_core::audit::AuditLog>,
+                std::sync::Arc::new(forge_core::pg_storage::PgPrincipalRepo::new(pg_storage.clone())) as std::sync::Arc<dyn forge_core::rbac::PrincipalRepo>,
+                std::sync::Arc::new(forge_core::pg_storage::PgProvenanceRepo::new(pg_storage.clone())) as std::sync::Arc<dyn forge_core::provenance::ProvenanceRepo>,
+                std::sync::Arc::new(forge_core::pg_storage::PgTeamRepo::new(pg_storage.clone())) as std::sync::Arc<dyn forge_core::team::TeamRepo>,
+                std::sync::Arc::new(forge_core::pg_storage::PgScopeRepo::new(pg_storage.clone())) as std::sync::Arc<dyn forge_core::team::ScopeRepo>,
+                std::sync::Arc::new(forge_core::pg_storage::PgBuildQueueRepo::new(pg_storage.clone())) as std::sync::Arc<dyn forge_core::team::BuildQueueRepo>,
+                std::sync::Arc::new(forge_core::pg_storage::PgDriftDetector {
+                    repo: std::sync::Arc::new(forge_core::pg_storage::PgBuildRepo::new(pg_storage.clone())) as std::sync::Arc<dyn BuildRepo>,
+                    storage: pg_storage.clone(),
+                    scanner: forge_api::make_scanner(&toolchain),
+                    audit: std::sync::Arc::new(forge_core::pg_storage::PgAuditLog::new(pg_storage.clone())) as std::sync::Arc<dyn forge_core::audit::AuditLog>,
+                }) as std::sync::Arc<dyn forge_core::drift::DriftDetector>,
+                None
+            )
+        }
+        forge_core::storage::Backend::Sqlite => {
+            let sqlite_path = if database_url.starts_with("sqlite://") {
+                database_url.strip_prefix("sqlite://").unwrap()
+            } else {
+                database_url
+            };
+            let path = if sqlite_path.starts_with('/') {
+                PathBuf::from(sqlite_path)
+            } else {
+                dir.join(sqlite_path)
+            };
+            let storage = Storage::open(&path).await.context("opening sqlite db")?;
+            (
+                std::sync::Arc::new(forge_core::repo::SqliteBuildRepo::new(storage.clone())) as std::sync::Arc<dyn BuildRepo>,
+                std::sync::Arc::new(forge_core::logs::FileLogStore::new(dir.join("logs"))) as std::sync::Arc<dyn LogStore>,
+                std::sync::Arc::new(forge_core::audit::SqliteAuditLog::new(storage.clone())) as std::sync::Arc<dyn forge_core::audit::AuditLog>,
+                std::sync::Arc::new(forge_core::rbac::SqlitePrincipalRepo::new(storage.clone())) as std::sync::Arc<dyn forge_core::rbac::PrincipalRepo>,
+                std::sync::Arc::new(forge_core::provenance::SqliteProvenanceRepo::new(storage.clone())) as std::sync::Arc<dyn forge_core::provenance::ProvenanceRepo>,
+                std::sync::Arc::new(forge_core::team::SqliteTeamRepo::new(storage.clone())) as std::sync::Arc<dyn forge_core::team::TeamRepo>,
+                std::sync::Arc::new(forge_core::team::SqliteScopeRepo::new(storage.clone())) as std::sync::Arc<dyn forge_core::team::ScopeRepo>,
+                std::sync::Arc::new(forge_core::team::SqliteBuildQueueRepo::new(storage.clone())) as std::sync::Arc<dyn forge_core::team::BuildQueueRepo>,
+                std::sync::Arc::new(forge_core::drift::SqliteDriftDetector {
+                    repo: std::sync::Arc::new(forge_core::repo::SqliteBuildRepo::new(storage.clone())) as std::sync::Arc<dyn BuildRepo>,
+                    storage: storage.clone(),
+                    scanner: forge_api::make_scanner(&toolchain),
+                    audit: std::sync::Arc::new(forge_core::audit::SqliteAuditLog::new(storage.clone())) as std::sync::Arc<dyn forge_core::audit::AuditLog>,
+                }) as std::sync::Arc<dyn forge_core::drift::DriftDetector>,
+                Some(storage)
+            )
+        }
+    };
 
     match cli.command {
-        Command::Build(args) => cmd_build(args, cli.output, repo, logs, &cfg, &toolchain).await,
+        Command::Build(args) => {
+            ensure_runtime(&mut cfg).await?;
+            cmd_build(args, cli.output, repo, logs, provenance, &cfg, &toolchain).await
+        }
         Command::Scan { build_id } => cmd_scan(&build_id, cli.output, repo).await,
         Command::List => cmd_list(cli.output, repo).await,
-        Command::Logs { build_id } => cmd_logs(&build_id, &logs).await,
+        Command::Logs { build_id } => cmd_logs(&build_id, logs).await,
         Command::Stats => cmd_stats(cli.output, repo).await,
         Command::Doctor => cmd_doctor(&toolchain),
-        Command::Serve { addr } => cmd_serve(&addr, storage, logs, cfg, toolchain).await,
-        Command::Principals { action } => cmd_principals(action, storage, cli.output).await,
+        Command::Serve { addr } => {
+            ensure_runtime(&mut cfg).await?;
+            let state = forge_api::ApiState::new(
+                std::sync::Arc::new(cfg.clone()),
+                repo,
+                logs,
+                audit,
+                principals,
+                provenance,
+                team,
+                scopes,
+                queue,
+                drift,
+                toolchain,
+            );
+            cmd_serve(&addr, state).await
+        }
+        Command::Principals { action } => cmd_principals(action, principals, cli.output).await,
         Command::Completions { .. } => Ok(()),
     }
 }
 
+async fn ensure_runtime(cfg: &mut Config) -> Result<()> {
+    if cfg.buildkit.managed {
+        let manager = forge_core::runtime::RuntimeManager::new(cfg.vendor.prefix.clone());
+        match manager.ensure_running().await {
+            Ok(addr) => {
+                tracing::info!("managed buildkit started at {}", addr);
+                cfg.buildkit.addr = addr;
+            }
+            Err(e) => {
+                tracing::warn!("failed to start managed buildkit: {}; falling back to {}", e, cfg.buildkit.addr);
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn cmd_serve(
     addr: &str,
-    storage: Storage,
-    logs: LogStore,
-    cfg: Config,
-    toolchain: Toolchain,
+    state: forge_api::ApiState,
 ) -> Result<()> {
     let socket: std::net::SocketAddr = addr.parse().context("invalid --addr")?;
-    let state = forge_api::ApiState::new(
-        std::sync::Arc::new(cfg),
-        storage,
-        logs,
-        std::sync::Arc::new(toolchain),
-    );
     forge_api::serve(state, socket).await
 }
 
 async fn cmd_principals(
     action: PrincipalsAction,
-    storage: Storage,
+    repo: std::sync::Arc<dyn forge_core::rbac::PrincipalRepo>,
     format: OutputFormat,
 ) -> Result<()> {
-    let repo = forge_core::rbac::PrincipalRepo::new(storage);
     match action {
         PrincipalsAction::Create { name, role } => {
             let created = repo.create(&name, role.into()).await?;
@@ -347,8 +422,9 @@ async fn cmd_principals(
 async fn cmd_build(
     args: BuildArgs,
     format: OutputFormat,
-    repo: BuildRepo,
-    logs: LogStore,
+    repo: std::sync::Arc<dyn BuildRepo>,
+    logs: std::sync::Arc<dyn LogStore>,
+    provenance: std::sync::Arc<dyn forge_core::provenance::ProvenanceRepo>,
     cfg: &Config,
     toolchain: &Toolchain,
 ) -> Result<()> {
@@ -383,6 +459,10 @@ async fn cmd_build(
     let push = args.push || cfg.registry.default_push;
     let bundled_prefix = toolchain.prefix().map(|p| p.to_path_buf());
 
+    let registry_auth = forge_core::registry::resolve(runner.as_ref(), &cfg.registry.auth)
+        .await
+        .unwrap_or_default();
+
     let orchestrator = BuildOrchestrator {
         builder: Arc::new(BuildkitBuilder::new(
             runner.clone(),
@@ -391,6 +471,7 @@ async fn cmd_build(
                 bundled_prefix: bundled_prefix.clone(),
                 registry_target,
                 push,
+                registry_auth,
                 ..Default::default()
             },
         )),
@@ -434,12 +515,19 @@ async fn cmd_build(
         policy: Arc::new(OpaPolicyEngine::new(
             runner.clone(),
             OpaConfig {
-                bundled_prefix,
+                bundled_prefix: bundled_prefix.clone(),
                 profiles: compliance.into_iter().collect(),
                 ..Default::default()
             },
         )),
-        provenance: Some(ProvenanceRepo::new(repo.storage().clone())),
+        verifier: Some(Arc::new(CosignSigner::new(
+            runner.clone(),
+            CosignConfig {
+                bundled_prefix: bundled_prefix.clone(),
+                ..Default::default()
+            },
+        ))),
+        provenance: Some(provenance),
         repo,
         logs,
     };
@@ -479,7 +567,7 @@ async fn cmd_build(
     Ok(())
 }
 
-async fn cmd_scan(build_id: &str, format: OutputFormat, repo: BuildRepo) -> Result<()> {
+async fn cmd_scan(build_id: &str, format: OutputFormat, repo: std::sync::Arc<dyn BuildRepo>) -> Result<()> {
     let id = Uuid::parse_str(build_id).context("invalid build id")?;
     let scan = repo.get_scan(id).await?;
     match (format, scan) {
@@ -510,7 +598,7 @@ async fn cmd_scan(build_id: &str, format: OutputFormat, repo: BuildRepo) -> Resu
     Ok(())
 }
 
-async fn cmd_list(format: OutputFormat, repo: BuildRepo) -> Result<()> {
+async fn cmd_list(format: OutputFormat, repo: std::sync::Arc<dyn BuildRepo>) -> Result<()> {
     let rows = repo.list(50).await?;
     match format {
         OutputFormat::Json | OutputFormat::Sarif => {
@@ -532,9 +620,9 @@ async fn cmd_list(format: OutputFormat, repo: BuildRepo) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_logs(build_id: &str, logs: &LogStore) -> Result<()> {
+async fn cmd_logs(build_id: &str, logs: std::sync::Arc<dyn LogStore>) -> Result<()> {
     let id = Uuid::parse_str(build_id).context("invalid build id")?;
-    match logs.read(id)? {
+    match logs.read(id).await? {
         Some(content) => {
             print!("{content}");
             Ok(())
@@ -546,7 +634,7 @@ async fn cmd_logs(build_id: &str, logs: &LogStore) -> Result<()> {
     }
 }
 
-async fn cmd_stats(format: OutputFormat, repo: BuildRepo) -> Result<()> {
+async fn cmd_stats(format: OutputFormat, repo: std::sync::Arc<dyn BuildRepo>) -> Result<()> {
     let rows = repo.list(10_000).await?;
     let total = rows.len();
     let succeeded = rows.iter().filter(|r| r.status == "succeeded").count();
@@ -584,7 +672,7 @@ fn cmd_doctor(toolchain: &Toolchain) -> Result<()> {
     } else {
         println!("(no vendor manifest found; tools will be resolved from PATH)");
     }
-    for tool in ["buildctl", "trivy", "grype", "syft", "cosign", "opa"] {
+    for tool in ["buildctl", "trivy", "grype", "syft", "cosign", "opa", "limactl", "rootlesskit"] {
         match toolchain.resolve(tool) {
             Ok(p) => println!("  [ok]   {tool} -> {}", p.display()),
             Err(e) => println!("  [miss] {tool}: {e}"),

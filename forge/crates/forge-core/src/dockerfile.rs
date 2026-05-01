@@ -37,7 +37,7 @@ pub fn render(spec: &BuildSpec) -> String {
     "#}
 }
 
-fn base_reference(runtime: Runtime, base: BaseImage) -> &'static str {
+pub(crate) fn base_reference(runtime: Runtime, base: BaseImage) -> &'static str {
     match (runtime, base) {
         (Runtime::Java, BaseImage::Alpine) => "eclipse-temurin:21-jre-alpine",
         (Runtime::Java, BaseImage::Debian) => "eclipse-temurin:21-jre-jammy",

@@ -21,7 +21,7 @@ use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
-pub use state::ApiState;
+pub use state::{ApiState, make_scanner};
 
 pub fn router(state: ApiState) -> Router {
     Router::new()
@@ -108,6 +108,8 @@ pub fn router(state: ApiState) -> Router {
         .layer(middleware::from_fn(observe_request))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
+        // Enforce a global rate limit: max 50 concurrent requests.
+        .layer(tower::limit::GlobalConcurrencyLimitLayer::new(50))
         .with_state(state)
 }
 

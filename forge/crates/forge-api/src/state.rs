@@ -23,51 +23,48 @@ use forge_core::toolchain::Toolchain;
 #[derive(Clone)]
 pub struct ApiState {
     pub config: Arc<Config>,
-    pub storage: Storage,
-    pub builds: BuildRepo,
-    pub logs: LogStore,
-    pub audit: AuditLog,
-    pub principals: PrincipalRepo,
-    pub provenance: ProvenanceRepo,
+    pub builds: Arc<dyn BuildRepo>,
+    pub logs: Arc<dyn LogStore>,
+    pub audit: Arc<dyn AuditLog>,
+    pub principals: Arc<dyn PrincipalRepo>,
+    pub provenance: Arc<dyn ProvenanceRepo>,
     pub toolchain: Arc<Toolchain>,
-    pub drift: Arc<DriftDetector>,
-    pub team: TeamRepo,
-    pub scopes: ScopeRepo,
-    pub queue: BuildQueueRepo,
+    pub drift: Arc<dyn DriftDetector>,
+    pub team: Arc<dyn TeamRepo>,
+    pub scopes: Arc<dyn ScopeRepo>,
+    pub queue: Arc<dyn BuildQueueRepo>,
 }
 
 impl ApiState {
     pub fn new(
         config: Arc<Config>,
-        storage: Storage,
-        logs: LogStore,
+        builds: Arc<dyn BuildRepo>,
+        logs: Arc<dyn LogStore>,
+        audit: Arc<dyn AuditLog>,
+        principals: Arc<dyn PrincipalRepo>,
+        provenance: Arc<dyn ProvenanceRepo>,
+        team: Arc<dyn TeamRepo>,
+        scopes: Arc<dyn ScopeRepo>,
+        queue: Arc<dyn BuildQueueRepo>,
+        drift: Arc<dyn DriftDetector>,
         toolchain: Arc<Toolchain>,
     ) -> Self {
-        let builds = BuildRepo::new(storage.clone());
-        let audit = AuditLog::new(storage.clone());
-        let drift_scanner = make_scanner(&toolchain);
         Self {
             builds: builds.clone(),
             audit: audit.clone(),
-            principals: PrincipalRepo::new(storage.clone()),
-            provenance: ProvenanceRepo::new(storage.clone()),
-            team: TeamRepo::new(storage.clone()),
-            scopes: ScopeRepo::new(storage.clone()),
-            queue: BuildQueueRepo::new(storage.clone()),
-            drift: Arc::new(DriftDetector {
-                repo: builds,
-                storage: storage.clone(),
-                scanner: drift_scanner,
-                audit,
-            }),
+            principals,
+            provenance,
+            team,
+            scopes,
+            queue,
+            drift,
             logs,
             toolchain,
             config,
-            storage,
         }
     }
 
-    pub fn orchestrator(&self) -> BuildOrchestrator {
+    pub async fn orchestrator(&self) -> BuildOrchestrator {
         let runner: Arc<TokioRunner> = Arc::new(TokioRunner);
         let bundled_prefix = self.toolchain.prefix().map(|p| p.to_path_buf());
         let signer = Arc::new(CosignSigner::new(
@@ -77,6 +74,10 @@ impl ApiState {
                 ..Default::default()
             },
         ));
+
+        let registry_auth = forge_core::registry::resolve(runner.as_ref(), &self.config.registry.auth)
+            .await
+            .unwrap_or_default();
         BuildOrchestrator {
             builder: Arc::new(BuildkitBuilder::new(
                 runner.clone(),
@@ -85,6 +86,7 @@ impl ApiState {
                     bundled_prefix: bundled_prefix.clone(),
                     registry_target: self.config.registry.default_target.clone(),
                     push: self.config.registry.default_push,
+                    registry_auth,
                     ..Default::default()
                 },
             )),
@@ -97,7 +99,7 @@ impl ApiState {
                 },
             )),
             signer: signer.clone(),
-            attestor: Some(signer),
+            attestor: Some(signer.clone()),
             policy: Arc::new(OpaPolicyEngine::new(
                 runner,
                 OpaConfig {
@@ -105,6 +107,7 @@ impl ApiState {
                     ..Default::default()
                 },
             )),
+            verifier: Some(signer.clone()),
             provenance: Some(self.provenance.clone()),
             repo: self.builds.clone(),
             logs: self.logs.clone(),
@@ -117,8 +120,9 @@ impl ApiState {
         }
         let interval = Duration::from_secs(self.config.drift.interval_seconds.max(1));
         let detector = self.drift.clone();
+        let builds = self.builds.clone();
         Some(tokio::spawn(async move {
-            run_scheduler(detector, interval).await;
+            run_scheduler(detector, builds, interval).await;
         }))
     }
 
@@ -127,7 +131,7 @@ impl ApiState {
     }
 }
 
-fn make_scanner(toolchain: &Arc<Toolchain>) -> Arc<dyn forge_core::tooling::Scanner> {
+pub fn make_scanner(toolchain: &Arc<Toolchain>) -> Arc<dyn forge_core::tooling::Scanner> {
     let runner: Arc<TokioRunner> = Arc::new(TokioRunner);
     let bundled_prefix = toolchain.prefix().map(|p| p.to_path_buf());
     Arc::new(MergedScanner {

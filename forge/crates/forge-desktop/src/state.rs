@@ -18,8 +18,9 @@ use forge_core::toolchain::Toolchain;
 pub struct AppState {
     pub data_dir: PathBuf,
     pub config: Arc<Config>,
-    pub repo: BuildRepo,
-    pub logs: LogStore,
+    pub repo: Arc<dyn BuildRepo>,
+    pub logs: Arc<dyn LogStore>,
+    pub provenance: Arc<dyn forge_core::provenance::ProvenanceRepo>,
     pub toolchain: Arc<Toolchain>,
 }
 
@@ -28,19 +29,36 @@ pub fn init_state() -> Result<AppState> {
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("creating {}", data_dir.display()))?;
     let cfg_path = data_dir.join("config.toml");
-    let config = Arc::new(Config::load(&cfg_path)?);
+    let mut config = Config::load(&cfg_path)?;
     let db_path = data_dir.join("forge.sqlite");
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     let storage = runtime.block_on(Storage::open(&db_path))?;
+
+    if config.buildkit.managed {
+        let manager = forge_core::runtime::RuntimeManager::new(config.vendor.prefix.clone());
+        match runtime.block_on(manager.ensure_running()) {
+            Ok(addr) => {
+                tracing::info!("managed buildkit started at {}", addr);
+                config.buildkit.addr = addr;
+            }
+            Err(e) => {
+                tracing::warn!("failed to start managed buildkit: {}; falling back to {}", e, config.buildkit.addr);
+            }
+        }
+    }
+
+    let config = Arc::new(config);
+
     // Spin up a long-lived runtime that we leak into a static handle so
     // async ops dispatched from UI callbacks share one executor.
     services::install_runtime(runtime);
 
-    let repo = BuildRepo::new(storage);
-    let logs = LogStore::new(data_dir.join("logs"));
+    let repo: Arc<dyn BuildRepo> = Arc::new(forge_core::repo::SqliteBuildRepo::new(storage.clone()));
+    let logs: Arc<dyn LogStore> = Arc::new(forge_core::logs::FileLogStore::new(data_dir.join("logs")));
+    let provenance: Arc<dyn forge_core::provenance::ProvenanceRepo> = Arc::new(forge_core::provenance::SqliteProvenanceRepo::new(storage.clone()));
     let toolchain = Arc::new(Toolchain::new(config.vendor.prefix.clone()));
 
     Ok(AppState {
@@ -48,6 +66,7 @@ pub fn init_state() -> Result<AppState> {
         config,
         repo,
         logs,
+        provenance,
         toolchain,
     })
 }

@@ -12,18 +12,10 @@ use forge_core::updater::{UpdateDecision, UpdateManifest, Updater, UpdaterConfig
 
 use crate::state::{runtime, AppState};
 
-/// Synchronous wrapper around the async fetch+decide flow so it can be called
-/// from a Dioxus event handler.
-pub fn check(state: &AppState) -> Result<UpdateDecision> {
-    let cfg = state.config.updater.clone();
+/// Asynchronous fetch+decide flow.
+pub async fn check_async(state: &AppState) -> Result<UpdateDecision> {
+    let section = state.config.updater.clone();
     let toolchain: Arc<Toolchain> = state.toolchain.clone();
-    runtime().block_on(async move { check_async(toolchain, cfg).await })
-}
-
-async fn check_async(
-    toolchain: Arc<Toolchain>,
-    section: forge_core::config::UpdaterSection,
-) -> Result<UpdateDecision> {
     let runner: Arc<TokioRunner> = Arc::new(TokioRunner);
     let updater = Updater::new(
         runner,

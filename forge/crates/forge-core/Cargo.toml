@@ -32,10 +32,12 @@ toml = { workspace = true }
 reqwest = { workspace = true }
 hmac = { workspace = true }
 metrics = { workspace = true }
+base64 = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
+dirs = "6.0.0"
 
 [features]
 default = []

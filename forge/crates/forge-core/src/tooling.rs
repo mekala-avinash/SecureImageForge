@@ -41,6 +41,11 @@ pub trait Attestor: Send + Sync {
     async fn attest(&self, image_ref: &str, predicate_json: &str) -> Result<()>;
 }
 
+#[async_trait]
+pub trait Verifier: Send + Sync {
+    async fn verify(&self, image_ref: &str) -> Result<()>;
+}
+
 /// Result returned by the policy engine — separate enum lets the orchestrator
 /// distinguish "no findings" from "findings but allowed by waiver".
 #[derive(Debug, Clone, PartialEq, Eq)]

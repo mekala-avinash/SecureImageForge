@@ -8,6 +8,7 @@ mod builds_list;
 mod dashboard;
 mod doctor;
 mod new_build;
+mod onboarding;
 mod settings;
 
 pub use build_detail::BuildDetail;
@@ -15,10 +16,12 @@ pub use builds_list::BuildsList;
 pub use dashboard::Dashboard;
 pub use doctor::DoctorView;
 pub use new_build::NewBuild;
+pub use onboarding::Onboarding;
 pub use settings::SettingsView;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
+    Onboarding,
     Dashboard,
     Builds,
     NewBuild,
@@ -29,7 +32,12 @@ pub enum Route {
 
 #[component]
 pub fn App() -> Element {
-    let route = use_signal(|| Route::Dashboard);
+    let state = crate::state::use_app_state();
+    let needs_onboarding = ["buildctl", "trivy", "syft", "cosign", "opa"]
+        .iter()
+        .any(|t| state.toolchain.resolve(t).is_err());
+    
+    let route = use_signal(|| if needs_onboarding { Route::Onboarding } else { Route::Dashboard });
     rsx! {
         style { {include_str!("../../assets/app.css")} }
         div {
@@ -38,6 +46,7 @@ pub fn App() -> Element {
             main {
                 class: "app-main",
                 {match &*route.read() {
+                    Route::Onboarding => rsx! { Onboarding { route: route } },
                     Route::Dashboard => rsx! { Dashboard {} },
                     Route::Builds => rsx! { BuildsList { route: route } },
                     Route::NewBuild => rsx! { NewBuild { route: route } },
@@ -77,22 +86,23 @@ fn Sidebar(route: Signal<Route>) -> Element {
                 span { class: "brand-mark", "◆" }
                 div {
                     class: "brand-text",
-                    div { class: "brand-name", "SecureImage Forge" }
-                    div { class: "brand-tag", "Build · Harden · Verify" }
+                    div { class: "brand-name", "SECUREIMAGE" }
+                    div { class: "brand-tag", "Forge OS v0.1" }
                 }
             }
             nav {
                 class: "app-nav",
-                {nav(Route::Dashboard, "Dashboard", "▣")}
-                {nav(Route::Builds,    "Builds",    "≡")}
-                {nav(Route::NewBuild,  "New build", "+")}
-                {nav(Route::Doctor,    "Doctor",    "✓")}
-                {nav(Route::Settings,  "Settings",  "⚙")}
+                {nav(Route::Dashboard, "Mission Control", "▣")}
+                {nav(Route::Builds,    "Build History",    "≡")}
+                {nav(Route::NewBuild,  "Initialize Forge", "+")}
+                {nav(Route::Doctor,    "System Diagnostics", "✓")}
+                {nav(Route::Settings,  "Core Settings",  "⚙")}
             }
             div {
                 class: "sidebar-footer",
-                span { "v" }
-                span { {env!("CARGO_PKG_VERSION")} }
+                span { style: "opacity: 0.5;", "●" }
+                span { "SecureImage Forge" }
+                span { style: "margin-left: auto; opacity: 0.5;", "{env!(\"CARGO_PKG_VERSION\")}" }
             }
         }
     }

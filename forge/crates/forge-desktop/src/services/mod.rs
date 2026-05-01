@@ -5,3 +5,4 @@ pub mod builds;
 pub mod orchestration;
 pub mod tray;
 pub mod updates;
+pub mod config_service;

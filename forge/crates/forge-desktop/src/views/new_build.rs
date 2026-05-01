@@ -25,10 +25,13 @@ pub fn NewBuild(route: Signal<Route>) -> Element {
     let mut hipaa = use_signal(|| false);
     let mut soc2 = use_signal(|| false);
     let mut error = use_signal(String::new);
+    let mut building = use_signal(|| false);
 
     let mut submit = move || {
+        building.set(true);
         let n = name.read().trim().to_string();
         if n.is_empty() {
+            building.set(false);
             error.set("Name is required".into());
             return;
         }
@@ -40,6 +43,7 @@ pub fn NewBuild(route: Signal<Route>) -> Element {
             archs.insert(Architecture::Arm64);
         }
         if archs.is_empty() {
+            building.set(false);
             error.set("Pick at least one architecture".into());
             return;
         }
@@ -72,98 +76,110 @@ pub fn NewBuild(route: Signal<Route>) -> Element {
     rsx! {
         section {
             class: "view",
-            header { class: "view-header", h1 { "New build" } }
+            header { class: "view-header", h1 { "Initialize New Forge" } }
             form {
-                class: "panel form",
+                class: "glass-card form",
+                style: "max-width: 800px;",
                 onsubmit: move |_| { submit(); },
 
                 div { class: "form-row",
-                    label { "Name" }
+                    label { "Forge Identity (Name)" }
                     input {
                         r#type: "text",
-                        placeholder: "my-secure-app",
+                        placeholder: "secure-service-alpha",
                         value: "{name.read()}",
                         oninput: move |evt| name.set(evt.value()),
                     }
                 }
 
-                div { class: "form-row",
-                    label { "Runtime" }
-                    select {
-                        oninput: move |evt| runtime.set(RuntimeChoice::parse(&evt.value())),
-                        option { value: "java",   selected: matches!(*runtime.read(), RuntimeChoice::Java),   "Java" }
-                        option { value: "dotnet", selected: matches!(*runtime.read(), RuntimeChoice::Dotnet), ".NET" }
-                        option { value: "go",     selected: matches!(*runtime.read(), RuntimeChoice::Go),     "Go" }
-                        option { value: "node",   selected: matches!(*runtime.read(), RuntimeChoice::Node),   "Node" }
-                        option { value: "python", selected: matches!(*runtime.read(), RuntimeChoice::Python), "Python" }
+                div { 
+                    style: "display: grid; grid-template-columns: 1fr 1fr; gap: 24px;",
+                    div { class: "form-row",
+                        label { "Target Runtime" }
+                        select {
+                            oninput: move |evt| runtime.set(RuntimeChoice::parse(&evt.value())),
+                            option { value: "java",   selected: matches!(*runtime.read(), RuntimeChoice::Java),   "Java (OpenJRE)" }
+                            option { value: "dotnet", selected: matches!(*runtime.read(), RuntimeChoice::Dotnet), ".NET Core" }
+                            option { value: "go",     selected: matches!(*runtime.read(), RuntimeChoice::Go),     "Go (Static)" }
+                            option { value: "node",   selected: matches!(*runtime.read(), RuntimeChoice::Node),   "Node.js" }
+                            option { value: "python", selected: matches!(*runtime.read(), RuntimeChoice::Python), "Python 3" }
+                        }
+                    }
+
+                    div { class: "form-row",
+                        label { "Base Matrix" }
+                        select {
+                            oninput: move |evt| base.set(BaseChoice::parse(&evt.value())),
+                            option { value: "alpine",     selected: matches!(*base.read(), BaseChoice::Alpine),     "Alpine (Minimal)" }
+                            option { value: "debian",     selected: matches!(*base.read(), BaseChoice::Debian),     "Debian (Stable)" }
+                            option { value: "distroless", selected: matches!(*base.read(), BaseChoice::Distroless), "Distroless (Hardened)" }
+                        }
                     }
                 }
 
-                div { class: "form-row",
-                    label { "Base image" }
-                    select {
-                        oninput: move |evt| base.set(BaseChoice::parse(&evt.value())),
-                        option { value: "alpine",     selected: matches!(*base.read(), BaseChoice::Alpine),     "Alpine" }
-                        option { value: "debian",     selected: matches!(*base.read(), BaseChoice::Debian),     "Debian" }
-                        option { value: "distroless", selected: matches!(*base.read(), BaseChoice::Distroless), "Distroless" }
+                div {
+                    style: "display: grid; grid-template-columns: 1fr 1fr; gap: 24px;",
+                    fieldset { 
+                        legend { "Architecture Support" }
+                        label { class: "checkbox",
+                            input { r#type: "checkbox", checked: *amd64.read(),
+                                oninput: move |evt| amd64.set(evt.value().parse().unwrap_or(false)) }
+                            "linux/amd64 (x86_64)"
+                        }
+                        label { class: "checkbox",
+                            input { r#type: "checkbox", checked: *arm64.read(),
+                                oninput: move |evt| arm64.set(evt.value().parse().unwrap_or(false)) }
+                            "linux/arm64 (Silicon)"
+                        }
+                    }
+
+                    fieldset { 
+                        legend { "Compliance Profiles" }
+                        label { class: "checkbox",
+                            input { r#type: "checkbox", checked: *cis.read(),
+                                oninput: move |evt| cis.set(evt.value().parse().unwrap_or(false)) }
+                            "CIS (Docker Benchmark)"
+                        }
+                        label { class: "checkbox",
+                            input { r#type: "checkbox", checked: *hipaa.read(),
+                                oninput: move |evt| hipaa.set(evt.value().parse().unwrap_or(false)) }
+                            "HIPAA (Healthcare)"
+                        }
+                        label { class: "checkbox",
+                            input { r#type: "checkbox", checked: *soc2.read(),
+                                oninput: move |evt| soc2.set(evt.value().parse().unwrap_or(false)) }
+                            "SOC2 (Enterprise)"
+                        }
                     }
                 }
 
-                fieldset { class: "form-row",
-                    legend { "Architectures" }
-                    label { class: "checkbox",
-                        input { r#type: "checkbox", checked: *amd64.read(),
-                            oninput: move |evt| amd64.set(evt.value().parse().unwrap_or(false)) }
-                        "linux/amd64"
-                    }
-                    label { class: "checkbox",
-                        input { r#type: "checkbox", checked: *arm64.read(),
-                            oninput: move |evt| arm64.set(evt.value().parse().unwrap_or(false)) }
-                        "linux/arm64"
-                    }
-                }
-
-                fieldset { class: "form-row",
-                    legend { "Compliance" }
-                    label { class: "checkbox",
-                        input { r#type: "checkbox", checked: *cis.read(),
-                            oninput: move |evt| cis.set(evt.value().parse().unwrap_or(false)) }
-                        "CIS"
-                    }
-                    label { class: "checkbox",
-                        input { r#type: "checkbox", checked: *hipaa.read(),
-                            oninput: move |evt| hipaa.set(evt.value().parse().unwrap_or(false)) }
-                        "HIPAA"
-                    }
-                    label { class: "checkbox",
-                        input { r#type: "checkbox", checked: *soc2.read(),
-                            oninput: move |evt| soc2.set(evt.value().parse().unwrap_or(false)) }
-                        "SOC2"
-                    }
-                }
-
-                fieldset { class: "form-row",
-                    legend { "Artifacts" }
-                    label { class: "checkbox",
-                        input { r#type: "checkbox", checked: *sbom.read(),
-                            oninput: move |evt| sbom.set(evt.value().parse().unwrap_or(false)) }
-                        "Generate SBOM"
-                    }
-                    label { class: "checkbox",
-                        input { r#type: "checkbox", checked: *sign.read(),
-                            oninput: move |evt| sign.set(evt.value().parse().unwrap_or(false)) }
-                        "Sign image"
+                fieldset { 
+                    legend { "Artifact Generation" }
+                    div {
+                        style: "display: flex; gap: 40px;",
+                        label { class: "checkbox",
+                            input { r#type: "checkbox", checked: *sbom.read(),
+                                oninput: move |evt| sbom.set(evt.value().parse().unwrap_or(false)) }
+                            "Generate SBOM (CycloneDX)"
+                        }
+                        label { class: "checkbox",
+                            input { r#type: "checkbox", checked: *sign.read(),
+                                oninput: move |evt| sign.set(evt.value().parse().unwrap_or(false)) }
+                            "Sign Image (Cosign/HCP)"
+                        }
                     }
                 }
 
                 if !error.read().is_empty() {
-                    p { class: "form-error", "{error.read()}" }
+                    p { style: "color: var(--signal); font-weight: 600;", "{error.read()}" }
                 }
 
                 div { class: "form-actions",
-                    button { class: "btn btn-ghost", r#type: "button",
-                        onclick: move |_| route.set(Route::Builds), "Cancel" }
-                    button { class: "btn btn-primary", r#type: "submit", "Start build" }
+                    button { class: "btn-ghost", r#type: "button",
+                        onclick: move |_| route.set(Route::Builds), "Abort" }
+                    button { class: "btn-primary", r#type: "submit", disabled: *building.read(),
+                        if *building.read() { "Starting Forge..." } else { "Initiate Forge" }
+                    }
                 }
             }
         }

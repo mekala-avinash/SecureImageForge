@@ -79,17 +79,28 @@ pub struct CreatedPrincipal {
     pub token: String,
 }
 
+#[async_trait::async_trait]
+pub trait PrincipalRepo: Send + Sync {
+    async fn create(&self, name: &str, role: Role) -> Result<CreatedPrincipal>;
+    async fn list(&self) -> Result<Vec<Principal>>;
+    async fn revoke(&self, id: &str) -> Result<()>;
+    async fn authenticate(&self, token: &str) -> Result<Option<Principal>>;
+}
+
 #[derive(Clone)]
-pub struct PrincipalRepo {
+pub struct SqlitePrincipalRepo {
     storage: Storage,
 }
 
-impl PrincipalRepo {
+impl SqlitePrincipalRepo {
     pub fn new(storage: Storage) -> Self {
         Self { storage }
     }
+}
 
-    pub async fn create(&self, name: &str, role: Role) -> Result<CreatedPrincipal> {
+#[async_trait::async_trait]
+impl PrincipalRepo for SqlitePrincipalRepo {
+    async fn create(&self, name: &str, role: Role) -> Result<CreatedPrincipal> {
         let id = Uuid::new_v4().to_string();
         let token = format!("forge_{}", random_token());
         let token_hash = hash_token(&token);
@@ -116,7 +127,7 @@ impl PrincipalRepo {
         })
     }
 
-    pub async fn list(&self) -> Result<Vec<Principal>> {
+    async fn list(&self) -> Result<Vec<Principal>> {
         let rows = sqlx::query(
             r#"SELECT id, name, role, created_at
                FROM principals WHERE revoked_at IS NULL ORDER BY created_at DESC"#,
@@ -136,7 +147,7 @@ impl PrincipalRepo {
             .collect())
     }
 
-    pub async fn revoke(&self, id: &str) -> Result<()> {
+    async fn revoke(&self, id: &str) -> Result<()> {
         sqlx::query(r#"UPDATE principals SET revoked_at = ? WHERE id = ?"#)
             .bind(Utc::now().to_rfc3339())
             .bind(id)
@@ -147,7 +158,7 @@ impl PrincipalRepo {
 
     /// Resolve a bearer token to a principal. Constant-time comparison via
     /// the unique hash index; revoked principals are ignored.
-    pub async fn authenticate(&self, token: &str) -> Result<Option<Principal>> {
+    async fn authenticate(&self, token: &str) -> Result<Option<Principal>> {
         let hash = hash_token(token);
         let row = sqlx::query(
             r#"SELECT id, name, role, created_at FROM principals
@@ -204,7 +215,7 @@ mod tests {
     #[tokio::test]
     async fn create_then_authenticate() {
         let storage = Storage::open_memory().await.unwrap();
-        let repo = PrincipalRepo::new(storage);
+        let repo = SqlitePrincipalRepo::new(storage);
         let created = repo.create("alice", Role::Operator).await.unwrap();
         assert!(created.token.starts_with("forge_"));
         let p = repo
@@ -219,7 +230,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_invalidates_token() {
         let storage = Storage::open_memory().await.unwrap();
-        let repo = PrincipalRepo::new(storage);
+        let repo = SqlitePrincipalRepo::new(storage);
         let created = repo.create("bob", Role::Viewer).await.unwrap();
         repo.revoke(&created.principal.id).await.unwrap();
         assert!(repo.authenticate(&created.token).await.unwrap().is_none());

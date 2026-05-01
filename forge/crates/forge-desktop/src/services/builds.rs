@@ -9,26 +9,22 @@ use forge_core::repo::{BuildRepo, BuildSummary};
 
 use crate::state::runtime;
 
-pub fn list(repo: &BuildRepo, limit: i64) -> Result<Vec<BuildSummary>> {
-    let repo = repo.clone();
-    runtime().block_on(async move { Ok(repo.list(limit).await?) })
+pub async fn list_async(repo: &std::sync::Arc<dyn BuildRepo>, limit: i64) -> Result<Vec<BuildSummary>> {
+    Ok(repo.list(limit).await?)
 }
 
-pub fn summary(repo: &BuildRepo, id: Uuid) -> Result<Option<BuildSummary>> {
-    let repo = repo.clone();
-    runtime().block_on(async move { Ok(repo.get_summary(id).await?) })
+pub async fn summary_async(repo: &std::sync::Arc<dyn BuildRepo>, id: Uuid) -> Result<Option<BuildSummary>> {
+    Ok(repo.get_summary(id).await?)
 }
 
-pub fn scan(repo: &BuildRepo, id: Uuid) -> Result<Option<ScanResult>> {
-    let repo = repo.clone();
-    runtime().block_on(async move { Ok(repo.get_scan(id).await?) })
+pub async fn scan_async(repo: &std::sync::Arc<dyn BuildRepo>, id: Uuid) -> Result<Option<ScanResult>> {
+    Ok(repo.get_scan(id).await?)
 }
 
-pub fn sbom(repo: &BuildRepo, id: Uuid) -> Result<Option<Sbom>> {
-    let repo = repo.clone();
-    runtime().block_on(async move { Ok(repo.get_sbom(id).await?) })
+pub async fn sbom_async(repo: &std::sync::Arc<dyn BuildRepo>, id: Uuid) -> Result<Option<Sbom>> {
+    Ok(repo.get_sbom(id).await?)
 }
 
-pub fn log(logs: &LogStore, id: Uuid) -> Result<Option<String>> {
-    Ok(logs.read(id)?)
+pub async fn log_async(logs: &std::sync::Arc<dyn LogStore>, id: Uuid) -> Result<Option<String>> {
+    Ok(logs.read(id).await?)
 }

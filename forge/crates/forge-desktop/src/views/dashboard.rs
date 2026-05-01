@@ -16,8 +16,16 @@ pub fn Dashboard() -> Element {
         }
     });
 
-    let _ = *tick.read();
-    let rows = builds::list(&state.repo, 10_000).unwrap_or_default();
+    let rows_resource = use_resource(move || {
+        let repo = state.repo.clone();
+        let _ = *tick.read();
+        async move { builds::list_async(&repo, 10_000).await.unwrap_or_default() }
+    });
+
+    let rows = match &*rows_resource.read() {
+        Some(r) => r.clone(),
+        None => vec![],
+    };
     let total = rows.len();
     let succeeded = rows.iter().filter(|r| r.status == "succeeded").count();
     let failed = rows.iter().filter(|r| r.status == "failed").count();
@@ -27,38 +35,44 @@ pub fn Dashboard() -> Element {
     rsx! {
         section {
             class: "view",
-            header { class: "view-header", h1 { "Dashboard" } }
+            header { class: "view-header", h1 { "Mission Control" } }
             div {
-                class: "tiles",
-                Tile { label: "Total",     value: total.to_string(),     tone: "neutral" }
-                Tile { label: "Succeeded", value: succeeded.to_string(), tone: "ok"      }
-                Tile { label: "Failed",    value: failed.to_string(),    tone: "fail"    }
-                Tile { label: "Running",   value: running.to_string(),   tone: "warn"    }
-                Tile { label: "Pending",   value: pending.to_string(),   tone: "neutral" }
+                class: "stats-grid",
+                Tile { label: "Total Builds", value: total.to_string(),     tone: "neutral" }
+                Tile { label: "Succeeded",    value: succeeded.to_string(), tone: "ok"      }
+                Tile { label: "Failed",       value: failed.to_string(),    tone: "fail"    }
+                Tile { label: "Active",       value: (running + pending).to_string(), tone: "warn" }
             }
             div {
-                class: "panel",
-                h2 { "Recent activity" }
+                class: "glass-card",
+                h2 { style: "margin-bottom: 20px;", "Temporal Activity Feed" }
                 if rows.is_empty() {
-                    p { class: "muted", "No builds yet — click ‘New build’ to start one." }
+                    p { class: "muted", "No active forges detected. Initialize a new build sequence." }
                 } else {
                     table {
                         class: "data-table",
+                        style: "width: 100%; border-collapse: collapse;",
                         thead { tr {
-                            th { "Build" }
-                            th { "Runtime" }
-                            th { "Status" }
-                            th { "Created" }
+                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "System ID" }
+                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Runtime Environment" }
+                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Integrity Status" }
+                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Timestamp" }
                         }}
                         tbody {
                             {rows.iter().take(10).map(|r| {
                                 let id_short = &r.id[..8.min(r.id.len())];
                                 rsx! {
-                                    tr { key: "{r.id}",
-                                        td { code { "{id_short}" } " " span { class: "build-name", "{r.name}" } }
-                                        td { "{r.runtime}" }
-                                        td { StatusBadge { status: r.status.clone() } }
-                                        td { class: "muted", "{r.created_at}" }
+                                    tr { 
+                                        key: "{r.id}",
+                                        style: "border-top: 1px solid var(--rule);",
+                                        td { style: "padding: 16px 12px;", 
+                                            span { class: "mono", style: "color: var(--accent);", "{id_short}" }
+                                            " "
+                                            span { style: "font-weight: 600; margin-left: 8px;", "{r.name}" }
+                                        }
+                                        td { style: "padding: 16px 12px;", "{r.runtime}" }
+                                        td { style: "padding: 16px 12px;", StatusBadge { status: r.status.clone() } }
+                                        td { style: "padding: 16px 12px; color: var(--muted);", "{r.created_at}" }
                                     }
                                 }
                             })}
@@ -73,7 +87,7 @@ pub fn Dashboard() -> Element {
 #[component]
 fn Tile(label: String, value: String, tone: &'static str) -> Element {
     rsx! {
-        div { class: "tile tile-{tone}",
+        div { class: "glass-card tile tile-{tone}",
             div { class: "tile-label", "{label}" }
             div { class: "tile-value", "{value}" }
         }
@@ -88,5 +102,5 @@ pub fn StatusBadge(status: String) -> Element {
         "running" => "warn",
         _ => "neutral",
     };
-    rsx! { span { class: "badge badge-{tone}", "{status}" } }
+    rsx! { span { class: "status-badge {tone}", "{status}" } }
 }

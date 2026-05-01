@@ -55,6 +55,8 @@ enum Task {
     },
     /// Run `cargo audit` for advisories on the locked dependency graph.
     Audit,
+    /// Automates local developer setup: downloads bundled tools and prints start commands.
+    DevSetup,
     /// Build release bundles for the current host, write SHA-256 digests, and
     /// optionally cosign-sign the artifacts.
     Dist {
@@ -73,6 +75,33 @@ enum Task {
         #[arg(long, default_value = "stable")]
         channel: String,
     },
+    /// Build release bundles for macOS and run notarization.
+    DistMac {
+        #[arg(long, default_value = "dist")]
+        out: PathBuf,
+        #[arg(long, env = "COSIGN_KEY")]
+        cosign_key: Option<String>,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long, default_value = "stable")]
+        channel: String,
+    },
+    /// Build release bundles for Linux and create DEB/RPM packages.
+    DistLinux {
+        #[arg(long, default_value = "dist")]
+        out: PathBuf,
+        #[arg(long, env = "COSIGN_KEY")]
+        cosign_key: Option<String>,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long, default_value = "stable")]
+        channel: String,
+    },
+    /// Build a macOS DMG installer.
+    DmgMac {
+        #[arg(long, default_value = "dist")]
+        out: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -87,12 +116,50 @@ fn main() -> Result<()> {
         } => bundle_buildkit(&platforms, &out, no_verify, &tools),
         Task::Coverage { min_percent } => coverage(min_percent),
         Task::Audit => audit(),
+        Task::DevSetup => dev_setup(),
         Task::Dist {
             out,
             cosign_key,
             version,
             channel,
         } => dist(&out, cosign_key.as_deref(), version.as_deref(), &channel),
+        Task::DistMac {
+            out,
+            cosign_key,
+            version,
+            channel,
+        } => {
+            dist(&out, cosign_key.as_deref(), version.as_deref(), &channel)?;
+            let script = workspace_root()?.join("scripts").join("notarize.sh");
+            if script.exists() {
+                let status = Command::new(&script).arg(&out).status()?;
+                if !status.success() {
+                    bail!("notarize.sh failed");
+                }
+            } else {
+                println!("[xtask] WARN: scripts/notarize.sh not found, skipping notarization");
+            }
+            Ok(())
+        }
+        Task::DistLinux {
+            out,
+            cosign_key,
+            version,
+            channel,
+        } => {
+            dist(&out, cosign_key.as_deref(), version.as_deref(), &channel)?;
+            let script = workspace_root()?.join("scripts").join("build-deb.sh");
+            if script.exists() {
+                let status = Command::new(&script).arg(&out).status()?;
+                if !status.success() {
+                    bail!("build-deb.sh failed");
+                }
+            } else {
+                println!("[xtask] WARN: scripts/build-deb.sh not found, skipping packaging");
+            }
+            Ok(())
+        }
+        Task::DmgMac { out } => bundle_macos_dmg(&out),
     }
 }
 
@@ -130,6 +197,40 @@ fn coverage(min_percent: f64) -> Result<()> {
             "coverage {percent:.2}% below floor {min_percent:.2}% — add tests or lower the floor"
         );
     }
+    Ok(())
+}
+
+fn dev_setup() -> Result<()> {
+    let platform = host_platform();
+    println!("=== SecureImageForge Dev Setup ===");
+    println!("Platform: {}", platform);
+    
+    // 1. Download bundled tools
+    println!("\nDownloading bundled tools...");
+    let mut tools = vec!["buildkit", "trivy", "grype", "syft", "cosign", "opa"].into_iter().map(String::from).collect::<Vec<_>>();
+    if platform.starts_with("darwin") {
+        tools.push("lima".into());
+    } else if platform.starts_with("linux") {
+        tools.push("rootlesskit".into());
+    }
+
+    bundle_buildkit(
+        &[platform], 
+        &PathBuf::from("vendor"), 
+        false, 
+        &tools
+    )?;
+
+    // 2. Print startup commands
+    println!("\n=== Ready! ===");
+    println!("To start development, run these commands in separate terminals:\n");
+    println!("1. Start rootless BuildKit daemon:");
+    println!("   buildkitd --rootless\n");
+    println!("2. Run the Desktop application:");
+    println!("   cargo run -p forge-desktop\n");
+    println!("Note: If you haven't installed buildkitd on your host yet,");
+    println!("      install it via your package manager (e.g. `brew install buildkit`)");
+
     Ok(())
 }
 
@@ -215,38 +316,78 @@ fn dist(out: &Path, cosign_key: Option<&str>, version: Option<&str>, channel: &s
         "forge-desktop"
     });
 
-    let mut entries = Vec::new();
+    let safe_platform = host_platform.replace('/', "-");
+    let staging_name = format!("forge-{safe_platform}");
+    let staging_dir = out.join(&staging_name);
+    std::fs::create_dir_all(&staging_dir)?;
+
     for (label, src) in [("cli", &cli_bin), ("desktop", &desktop_bin)] {
         if !src.exists() {
-            eprintln!(
-                "[xtask] WARN: expected {} at {} — skipping",
-                label,
-                src.display()
-            );
+            eprintln!("[xtask] WARN: expected {} at {} — skipping", label, src.display());
             continue;
         }
-        let file_name = artifact_name(label, &host_platform, src);
-        let dest = out.join(&file_name);
-        std::fs::copy(src, &dest)
-            .with_context(|| format!("copying {} → {}", src.display(), dest.display()))?;
-        let bytes = std::fs::read(&dest)?;
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let sha = hex::encode(hasher.finalize());
-        let signature_url = if let Some(key) = cosign_key {
-            cosign_sign_blob(&dest, key)?;
-            Some(format!("{file_name}.sig"))
-        } else {
-            None
-        };
-        entries.push(ReleaseEntry {
-            platform: host_platform.clone(),
-            url: file_name.clone(),
-            sha256: sha,
-            signature_url,
-            size_bytes: bytes.len() as u64,
-        });
+        let file_name = src.file_name().unwrap();
+        let dest = staging_dir.join(file_name);
+        std::fs::copy(src, &dest)?;
     }
+
+    // Bundle dependencies
+    println!("\n[xtask] bundling third-party tools...");
+    let tmp_vendor_dir = out.join("tmp_vendor");
+    let mut tools = vec!["buildkit", "trivy", "grype", "syft", "cosign", "opa"].into_iter().map(String::from).collect::<Vec<_>>();
+    if host_platform.starts_with("darwin") {
+        tools.push("lima".into());
+    } else if host_platform.starts_with("linux") {
+        tools.push("rootlesskit".into());
+    }
+
+    bundle_buildkit(
+        &[host_platform.clone()],
+        &tmp_vendor_dir,
+        false,
+        &tools
+    )?;
+
+    // Move vendor tools into staging_dir/vendor
+    let staging_vendor = staging_dir.join("vendor");
+    std::fs::create_dir_all(&staging_vendor)?;
+    let platform_vendor = tmp_vendor_dir.join(&host_platform);
+    if platform_vendor.exists() {
+        for entry in std::fs::read_dir(platform_vendor)? {
+            let entry = entry?;
+            std::fs::copy(entry.path(), staging_vendor.join(entry.file_name()))?;
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp_vendor_dir);
+
+    // Create archive
+    let archive_ext = if cfg!(windows) { ".zip" } else { ".tar.gz" };
+    let archive_name = format!("{staging_name}{archive_ext}");
+    let archive_path = out.join(&archive_name);
+
+    if cfg!(windows) {
+        let status = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &format!("Compress-Archive -Path '{}/*' -DestinationPath '{}' -Force", staging_dir.display(), archive_path.display())])
+            .status()?;
+        if !status.success() { bail!("failed to create zip archive"); }
+    } else {
+        let status = Command::new("tar")
+            .current_dir(out)
+            .args(["-czf", archive_path.file_name().unwrap().to_str().unwrap(), &staging_name])
+            .status()?;
+        if !status.success() { bail!("failed to create tar archive"); }
+    }
+
+    let bytes = std::fs::read(&archive_path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let sha = hex::encode(hasher.finalize());
+    let signature_url = if let Some(key) = cosign_key {
+        cosign_sign_blob(&archive_path, key)?;
+        Some(format!("{archive_name}.sig"))
+    } else {
+        None
+    };
 
     let resolved_version = version
         .map(str::to_string)
@@ -255,7 +396,13 @@ fn dist(out: &Path, cosign_key: Option<&str>, version: Option<&str>, channel: &s
         version: resolved_version,
         published_at: now_rfc3339(),
         channel: channel.to_string(),
-        releases: entries,
+        releases: vec![ReleaseEntry {
+            platform: host_platform.clone(),
+            url: archive_name.clone(),
+            sha256: sha,
+            signature_url,
+            size_bytes: bytes.len() as u64,
+        }],
         min_required: None,
     };
     let manifest_path = out.join("manifest.json");
@@ -301,15 +448,34 @@ fn artifact_name(label: &str, platform: &str, src: &Path) -> String {
     format!("forge-{label}-{safe_platform}{ext}")
 }
 
+fn resolve_cosign() -> Result<PathBuf> {
+    let host_platform = host_platform();
+    let vendor_path = workspace_root()?
+        .join("vendor")
+        .join(&host_platform)
+        .join("cosign");
+
+    if vendor_path.exists() {
+        return Ok(vendor_path);
+    }
+
+    if let Ok(path) = which::which("cosign") {
+        return Ok(path);
+    }
+
+    bail!("cosign not found in vendor/{} or PATH. Run `cargo xtask bundle-buildkit --tools cosign` or install it manually.", host_platform)
+}
+
 fn cosign_sign_blob(file: &Path, key: &str) -> Result<()> {
     println!("[xtask] cosign sign-blob {}", file.display());
+    let cosign_bin = resolve_cosign()?;
     let sig_path = file.with_extension(format!(
         "{}.sig",
         file.extension()
             .and_then(|e| e.to_str())
             .unwrap_or_default()
     ));
-    let status = Command::new("cosign")
+    let status = Command::new(&cosign_bin)
         .args([
             "sign-blob",
             "--yes",
@@ -345,6 +511,112 @@ fn workspace_root() -> Result<PathBuf> {
     Ok(manifest.parent().map(Path::to_path_buf).unwrap_or(manifest))
 }
 
+fn bundle_macos_dmg(out: &Path) -> Result<()> {
+    let host_platform = host_platform();
+    if !host_platform.starts_with("darwin") {
+        bail!("DMG packaging only supported on macOS");
+    }
+
+    println!("[xtask] building DMG installer for {host_platform}...");
+    
+    // 1. Build release binaries
+    run_cargo(&["build", "--release", "-p", "forge-cli", "-p", "forge-desktop"])?;
+    
+    let workspace = workspace_root()?;
+    let target_dir = workspace.join("target/release");
+    let staging_dir = out.join("staging-dmg");
+    let app_name = "SecureImageForge.app";
+    let app_bundle = staging_dir.join(app_name);
+    let contents = app_bundle.join("Contents");
+    let macos_dir = contents.join("MacOS");
+    let resources_dir = contents.join("Resources");
+    
+    if staging_dir.exists() {
+        std::fs::remove_dir_all(&staging_dir)?;
+    }
+    std::fs::create_dir_all(&macos_dir)?;
+    std::fs::create_dir_all(&resources_dir)?;
+    
+    // 2. Copy binaries and assets
+    std::fs::copy(target_dir.join("forge-desktop"), macos_dir.join("forge-desktop"))?;
+    std::fs::copy(target_dir.join("forge"), macos_dir.join("forge"))?;
+    
+    // Copy vendor tools (important for portability!)
+    let vendor_dir = workspace.join("vendor");
+    if vendor_dir.exists() {
+        let dest_vendor = macos_dir.join("vendor");
+        copy_dir_all(&vendor_dir, &dest_vendor)?;
+    }
+    
+    // Copy Info.plist
+    let plist_src = workspace.join("crates/forge-desktop/packaging/macos/Info.plist");
+    if plist_src.exists() {
+        std::fs::copy(plist_src, contents.join("Info.plist"))?;
+    }
+    
+    // Copy Icon
+    let icon_src = workspace.join("crates/forge-desktop/packaging/macos/AppIcon.icns");
+    if icon_src.exists() {
+        std::fs::copy(icon_src, resources_dir.join("AppIcon.icns"))?;
+    }
+
+    // 3. Ad-hoc signing (required for arm64)
+    println!("[xtask] ad-hoc signing .app bundle with Hardened Runtime...");
+    let entitlements = workspace.join("crates/forge-desktop/packaging/macos/entitlements.plist");
+    let mut cmd = Command::new("codesign");
+    cmd.args(["--force", "--deep", "--sign", "-", "--options", "runtime"]);
+    if entitlements.exists() {
+        cmd.arg("--entitlements").arg(entitlements.to_str().unwrap());
+    }
+    cmd.arg(app_bundle.to_str().unwrap());
+    cmd.status()?;
+
+    // 4. Create DMG
+    let dmg_name = format!("SecureImageForge-{}.dmg", host_platform.replace('/', "-"));
+    let dmg_path = out.join(&dmg_name);
+    if dmg_path.exists() {
+        std::fs::remove_file(&dmg_path)?;
+    }
+    
+    println!("[xtask] creating DMG: {}", dmg_path.display());
+    let status = Command::new("hdiutil")
+        .args([
+            "create",
+            "-volname", "SecureImage Forge",
+            "-srcfolder", app_bundle.to_str().unwrap(),
+            "-ov",
+            "-format", "UDZO",
+            dmg_path.to_str().unwrap()
+        ])
+        .status()?;
+        
+    if !status.success() {
+        bail!("hdiutil failed");
+    }
+    
+    println!("\n=== DMG Created Successfully! ===");
+    println!("Path: {}", dmg_path.display());
+    
+    // Cleanup staging
+    let _ = std::fs::remove_dir_all(&staging_dir);
+    
+    Ok(())
+}
+
+fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<()> {
+    std::fs::create_dir_all(&dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        } else {
+            std::fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // bundle-buildkit
 // ---------------------------------------------------------------------------
@@ -367,10 +639,13 @@ struct VendorEntry {
 /// Pinned versions and Apache-2.0 licensed source.
 const TOOL_VERSIONS: &[(&str, &str)] = &[
     ("buildkit", "v0.16.0"),
-    ("trivy", "0.55.2"),
+    ("trivy", "v0.55.2"),
+    ("grype", "v0.80.0"),
     ("syft", "v1.14.1"),
     ("cosign", "v2.4.1"),
     ("opa", "v0.68.0"),
+    ("lima", "v0.22.0"),
+    ("rootlesskit", "v2.0.2"),
 ];
 
 fn version_of(tool: &str) -> Result<&'static str> {
@@ -459,7 +734,7 @@ fn url_for(t: &ToolFetch) -> Result<(String, String)> {
             )
         }
         "trivy" => {
-            // trivy uses capitalized OS in its archive names
+            let v_no_v = t.version.trim_start_matches('v');
             let os_cap = match os_release {
                 "darwin" => "macOS",
                 "linux" => "Linux",
@@ -468,13 +743,23 @@ fn url_for(t: &ToolFetch) -> Result<(String, String)> {
             let arch_cap = match t.arch.as_str() {
                 "amd64" => "64bit",
                 "arm64" => "ARM64",
-                other => bail!("unsupported arch {other} for trivy"),
+                _ => bail!("unsupported arch for trivy"),
             };
             let archive = format!("trivy_{v_no_v}_{os_cap}-{arch_cap}.tar.gz");
             (
-                format!(
-                    "https://github.com/aquasecurity/trivy/releases/download/v{v_no_v}/{archive}"
-                ),
+                format!("https://github.com/aquasecurity/trivy/releases/download/v{v_no_v}/{archive}"),
+                archive,
+            )
+        }
+        "grype" => {
+            let archive = format!(
+                "grype_{v}_{os}_{a}.tar.gz",
+                v = t.version.trim_start_matches('v'),
+                os = os_release,
+                a = t.arch
+            );
+            (
+                format!("https://github.com/anchore/grype/releases/download/{v}/{archive}", v = t.version),
                 archive,
             )
         }
@@ -505,14 +790,30 @@ fn url_for(t: &ToolFetch) -> Result<(String, String)> {
             )
         }
         "opa" => {
-            // opa also raw binaries, suffixed _<os>_<arch>_static
-            let exe = format!("opa_{}_{}_static", os_release, t.arch);
+            let archive = format!("opa_{os_release}_{a}_static", os_release = os_release, a = t.arch);
             (
-                format!(
-                    "https://github.com/open-policy-agent/opa/releases/download/{}/{}",
-                    t.version, exe
-                ),
-                exe,
+                format!("https://github.com/open-policy-agent/opa/releases/download/{v}/{archive}", v = t.version),
+                "opa".into(),
+            )
+        }
+        "lima" => {
+            let v_no_v = t.version.trim_start_matches('v');
+            let archive = format!("lima-{v_no_v}-{os_release}-{a}.tar.gz", os_release = os_release, a = t.arch);
+            (
+                format!("https://github.com/lima-vm/lima/releases/download/{v}/{archive}", v = t.version),
+                archive,
+            )
+        }
+        "rootlesskit" => {
+            let rust_arch = match t.arch.as_str() {
+                "amd64" => "x86_64",
+                "arm64" => "aarch64",
+                other => other,
+            };
+            let archive = format!("rootlesskit-{rust_arch}-unknown-linux-gnu.tar.gz");
+            (
+                format!("https://github.com/rootless-containers/rootlesskit/releases/download/{v}/{archive}", v = t.version),
+                archive,
             )
         }
         other => bail!("unknown tool {other}"),
@@ -658,7 +959,9 @@ fn extract_tar_gz(bytes: &[u8], t: &ToolFetch, dest_dir: &Path) -> Result<PathBu
 
 fn binary_name(tool: &str) -> &str {
     match tool {
-        "buildkit" => "buildctl", // we only need the client, daemon is shipped separately
+        "buildkit" => "buildctl",
+        "lima" => "limactl",
+        "rootlesskit" => "rootlesskit",
         other => other,
     }
 }

@@ -20,7 +20,7 @@ use crate::logs::LogStore;
 use crate::provenance::{build_statement, ProvenanceRepo};
 use crate::repo::BuildRepo;
 use crate::tooling::{
-    Attestor, ImageBuilder, PolicyDecision, PolicyEngine, SbomGenerator, Scanner, Signer,
+    Attestor, ImageBuilder, PolicyDecision, PolicyEngine, SbomGenerator, Scanner, Signer, Verifier,
 };
 use crate::{Error, Result};
 
@@ -31,9 +31,10 @@ pub struct BuildOrchestrator {
     pub signer: Arc<dyn Signer>,
     pub attestor: Option<Arc<dyn Attestor>>,
     pub policy: Arc<dyn PolicyEngine>,
-    pub provenance: Option<ProvenanceRepo>,
-    pub repo: BuildRepo,
-    pub logs: LogStore,
+    pub verifier: Option<Arc<dyn Verifier>>,
+    pub provenance: Option<Arc<dyn ProvenanceRepo>>,
+    pub repo: Arc<dyn BuildRepo>,
+    pub logs: Arc<dyn LogStore>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +65,16 @@ impl BuildOrchestrator {
             .await?;
 
         let dockerfile = dockerfile::render(&spec);
+
+        if let Some(verifier) = &self.verifier {
+            let base_ref = dockerfile::base_reference(spec.runtime, spec.base_image);
+            info!(build_id = %record.id, base = %base_ref, "verifying upstream base image");
+            if let Err(e) = verifier.verify(base_ref).await {
+                self.fail(&record, &e).await;
+                return Err(e);
+            }
+        }
+
         info!(build_id = %record.id, "running buildkit");
         let built = match self.builder.build(&spec, &dockerfile).await {
             Ok(b) => b,
@@ -73,7 +84,7 @@ impl BuildOrchestrator {
             }
         };
 
-        let log_path = self.logs.write(record.id, &built.log)?;
+        let log_path = self.logs.write(record.id, &built.log).await?;
         let log_path_str = log_path.display().to_string();
         self.repo
             .update_status(
@@ -259,14 +270,15 @@ mod tests {
     async fn full_pipeline_succeeds_when_policy_allows() {
         let runner: Arc<MockRunner> = Arc::new(happy_runner());
         let storage = Storage::open_memory().await.unwrap();
-        let repo = BuildRepo::new(storage);
+        let repo = Arc::new(crate::repo::SqliteBuildRepo::new(storage)) as Arc<dyn BuildRepo>;
         let log_dir = TempDir::new().unwrap();
-        let logs = LogStore::new(log_dir.path().to_path_buf());
+        let logs = Arc::new(crate::logs::FileLogStore::new(log_dir.path().to_path_buf())) as Arc<dyn LogStore>;
 
         let orch = BuildOrchestrator {
             builder: Arc::new(BuildkitBuilder::new(
                 runner.clone(),
                 BuildkitConfig {
+                    addr: "mock".into(),
                     buildctl_path: Some("/bin/buildctl".into()),
                     ..Default::default()
                 },
@@ -301,6 +313,7 @@ mod tests {
                     ..Default::default()
                 },
             )),
+            verifier: None,
             provenance: None,
             repo,
             logs,

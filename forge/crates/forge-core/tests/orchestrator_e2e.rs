@@ -16,11 +16,11 @@ use forge_core::adapters::trivy::{TrivyConfig, TrivyScanner};
 use forge_core::domain::{
     Architecture, BaseImage, BuildSpec, BuildStatus, ComplianceProfile, HardeningOptions, Runtime,
 };
-use forge_core::logs::LogStore;
+use forge_core::logs::FileLogStore;
 use forge_core::orchestrator::BuildOrchestrator;
 use forge_core::process::{MockRunner, ProcessOutput};
-use forge_core::provenance::ProvenanceRepo;
-use forge_core::repo::BuildRepo;
+use forge_core::provenance::{ProvenanceRepo, SqliteProvenanceRepo};
+use forge_core::repo::{BuildRepo, SqliteBuildRepo};
 use forge_core::storage::Storage;
 use forge_core::tooling::PolicyDecision;
 use tempfile::TempDir;
@@ -82,10 +82,10 @@ fn happy_runner() -> MockRunner {
 async fn full_pipeline_attests_provenance_and_unions_scans() {
     let runner: Arc<MockRunner> = Arc::new(happy_runner());
     let storage = Storage::open_memory().await.unwrap();
-    let repo = BuildRepo::new(storage.clone());
-    let provenance = ProvenanceRepo::new(storage.clone());
+    let repo = Arc::new(SqliteBuildRepo::new(storage.clone())) as Arc<dyn BuildRepo>;
+    let provenance = Arc::new(SqliteProvenanceRepo::new(storage.clone())) as Arc<dyn ProvenanceRepo>;
     let log_dir = TempDir::new().unwrap();
-    let logs = LogStore::new(log_dir.path().to_path_buf());
+    let logs = Arc::new(FileLogStore::new(log_dir.path().to_path_buf())) as Arc<dyn forge_core::logs::LogStore>;
 
     let signer = Arc::new(CosignSigner::new(
         runner.clone(),
@@ -99,6 +99,7 @@ async fn full_pipeline_attests_provenance_and_unions_scans() {
         builder: Arc::new(BuildkitBuilder::new(
             runner.clone(),
             BuildkitConfig {
+                addr: "mock".into(),
                 buildctl_path: Some("/bin/buildctl".into()),
                 ..Default::default()
             },
@@ -137,6 +138,7 @@ async fn full_pipeline_attests_provenance_and_unions_scans() {
             },
         )),
         provenance: Some(provenance.clone()),
+        verifier: None,
         repo: repo.clone(),
         logs,
     };

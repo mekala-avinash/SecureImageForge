@@ -31,6 +31,8 @@ pub struct BuildkitConfig {
     pub registry_target: Option<String>,
     /// Push the resulting image to the configured registry.
     pub push: bool,
+    /// Resolved registry authentication credentials.
+    pub registry_auth: Option<crate::registry::ResolvedAuth>,
 }
 
 impl Default for BuildkitConfig {
@@ -42,6 +44,7 @@ impl Default for BuildkitConfig {
             local_tag: None,
             registry_target: None,
             push: false,
+            registry_auth: None,
         }
     }
 }
@@ -68,6 +71,11 @@ impl BuildkitBuilder {
 impl ImageBuilder for BuildkitBuilder {
     async fn build(&self, spec: &BuildSpec, dockerfile: &str) -> Result<BuiltImage> {
         spec.validate()?;
+        
+        if self.config.addr != "mock" {
+            preflight_check(&self.config.addr).await?;
+        }
+
         let tmp = TempDir::new().map_err(Error::Io)?;
         let context = tmp.path().to_path_buf();
         let dockerfile_path = context.join("Dockerfile");
@@ -78,6 +86,32 @@ impl ImageBuilder for BuildkitBuilder {
             .await
             .map_err(Error::Io)?;
         f.flush().await.map_err(Error::Io)?;
+
+        // If we have registry credentials, write them to a temporary config.json
+        // inside DOCKER_CONFIG to pass to buildctl.
+        let mut process_env = std::collections::HashMap::new();
+        if let Some(auth) = &self.config.registry_auth {
+            let docker_config_dir = tmp.path().join(".docker");
+            tokio::fs::create_dir_all(&docker_config_dir)
+                .await
+                .map_err(Error::Io)?;
+            let config_json_path = docker_config_dir.join("config.json");
+            let encoded_auth = base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                format!("{}:{}", auth.username, auth.password).as_bytes(),
+            );
+            let config_json = serde_json::json!({
+                "auths": {
+                    &auth.registry: {
+                        "auth": encoded_auth
+                    }
+                }
+            });
+            tokio::fs::write(&config_json_path, config_json.to_string())
+                .await
+                .map_err(Error::Io)?;
+            process_env.insert("DOCKER_CONFIG".to_string(), docker_config_dir.to_string_lossy().to_string());
+        }
 
         let buildctl = self.buildctl()?;
         let image_name = self
@@ -96,7 +130,7 @@ impl ImageBuilder for BuildkitBuilder {
             .collect::<Vec<_>>()
             .join(",");
 
-        let process = ProcessSpec::new(buildctl.to_string_lossy().to_string())
+        let mut process = ProcessSpec::new(buildctl.to_string_lossy().to_string())
             .arg("--addr")
             .arg(&self.config.addr)
             .arg("build")
@@ -109,6 +143,10 @@ impl ImageBuilder for BuildkitBuilder {
             ))
             .arg("--progress=plain");
 
+        for (k, v) in process_env {
+            process = process.env(&k, &v);
+        }
+
         let mut child = self.runner.stream(process).await?;
         let mut log = String::new();
         while let Some(line) = child.lines.next().await {
@@ -116,8 +154,7 @@ impl ImageBuilder for BuildkitBuilder {
             log.push_str(&line);
             log.push('\n');
         }
-        let exit = child
-            .wait
+        let exit = (&mut child.wait)
             .await
             .map_err(|e| Error::Internal(anyhow::anyhow!(e)))??;
         if exit != 0 {
@@ -146,6 +183,33 @@ fn sanitize(name: &str) -> String {
             }
         })
         .collect()
+}
+
+async fn preflight_check(addr: &str) -> Result<()> {
+    if let Some(path) = addr.strip_prefix("unix://") {
+        if !std::path::Path::new(path).exists() {
+            return Err(Error::ToolFailure {
+                tool: "buildkitd".into(),
+                code: 1,
+                stderr: format!("buildkitd socket not found at {}. Ensure buildkitd is running (e.g. `buildkitd --rootless &`)", path),
+            });
+        }
+    } else if let Some(addr_str) = addr.strip_prefix("tcp://") {
+        if tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tokio::net::TcpStream::connect(addr_str),
+        )
+        .await
+        .is_err()
+        {
+            return Err(Error::ToolFailure {
+                tool: "buildkitd".into(),
+                code: 1,
+                stderr: format!("Could not connect to buildkitd at {}. Ensure buildkitd is running.", addr_str),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn arch_to_str(a: crate::domain::Architecture) -> &'static str {
@@ -195,11 +259,13 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        let cfg = BuildkitConfig {
-            buildctl_path: Some("/usr/local/bin/buildctl".into()),
-            ..BuildkitConfig::default()
-        };
-        let builder = BuildkitBuilder::new(Arc::new(mock), cfg);
+        let builder = BuildkitBuilder::new(
+            Arc::new(mock),
+            BuildkitConfig {
+                addr: "mock".into(),
+                ..Default::default()
+            },
+        );
         let result = builder
             .build(&build_spec(), "FROM scratch\n")
             .await
@@ -220,6 +286,7 @@ mod tests {
         );
         let cfg = BuildkitConfig {
             buildctl_path: Some("/usr/local/bin/buildctl".into()),
+            addr: "mock".into(),
             ..BuildkitConfig::default()
         };
         let builder = BuildkitBuilder::new(Arc::new(mock), cfg);

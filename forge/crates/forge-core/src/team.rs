@@ -7,17 +7,27 @@ use crate::rbac::Role;
 use crate::storage::Storage;
 use crate::{Error, Result};
 
+#[async_trait::async_trait]
+pub trait TeamRepo: Send + Sync {
+    async fn create_org(&self, id: &str, name: &str) -> Result<()>;
+    async fn create_project(&self, id: &str, org_id: &str, name: &str) -> Result<()>;
+    async fn create_environment(&self, id: &str, project_id: &str, name: &str) -> Result<()>;
+}
+
 #[derive(Clone)]
-pub struct TeamRepo {
+pub struct SqliteTeamRepo {
     storage: Storage,
 }
 
-impl TeamRepo {
+impl SqliteTeamRepo {
     pub fn new(storage: Storage) -> Self {
         Self { storage }
     }
+}
 
-    pub async fn create_org(&self, id: &str, name: &str) -> Result<()> {
+#[async_trait::async_trait]
+impl TeamRepo for SqliteTeamRepo {
+    async fn create_org(&self, id: &str, name: &str) -> Result<()> {
         sqlx::query(r#"INSERT INTO organizations (id, name, created_at) VALUES (?, ?, ?)"#)
             .bind(id)
             .bind(name)
@@ -27,7 +37,7 @@ impl TeamRepo {
         Ok(())
     }
 
-    pub async fn create_project(&self, id: &str, org_id: &str, name: &str) -> Result<()> {
+    async fn create_project(&self, id: &str, org_id: &str, name: &str) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO projects (id, organization_id, name, created_at) VALUES (?, ?, ?, ?)"#,
         )
@@ -40,7 +50,7 @@ impl TeamRepo {
         Ok(())
     }
 
-    pub async fn create_environment(&self, id: &str, project_id: &str, name: &str) -> Result<()> {
+    async fn create_environment(&self, id: &str, project_id: &str, name: &str) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO environments (id, project_id, name, created_at) VALUES (?, ?, ?, ?)"#,
         )
@@ -54,17 +64,41 @@ impl TeamRepo {
     }
 }
 
+#[async_trait::async_trait]
+pub trait ScopeRepo: Send + Sync {
+    async fn bind_group_role(&self, group_name: &str, role: Role) -> Result<()>;
+    async fn list_group_bindings(&self) -> Result<Vec<GroupRoleBinding>>;
+    async fn create_scope_grant(
+        &self,
+        principal_id: &str,
+        scope_type: &str,
+        scope_id: &str,
+        role: Role,
+    ) -> Result<()>;
+    async fn list_scope_grants(&self) -> Result<Vec<ScopeGrant>>;
+    async fn has_scope_role(
+        &self,
+        principal_id: &str,
+        scope_type: &str,
+        scope_id: &str,
+        min_role: Role,
+    ) -> Result<bool>;
+}
+
 #[derive(Clone)]
-pub struct ScopeRepo {
+pub struct SqliteScopeRepo {
     storage: Storage,
 }
 
-impl ScopeRepo {
+impl SqliteScopeRepo {
     pub fn new(storage: Storage) -> Self {
         Self { storage }
     }
+}
 
-    pub async fn bind_group_role(&self, group_name: &str, role: Role) -> Result<()> {
+#[async_trait::async_trait]
+impl ScopeRepo for SqliteScopeRepo {
+    async fn bind_group_role(&self, group_name: &str, role: Role) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO group_role_bindings (group_name, role, created_at)
                VALUES (?, ?, ?)
@@ -78,7 +112,7 @@ impl ScopeRepo {
         Ok(())
     }
 
-    pub async fn list_group_bindings(&self) -> Result<Vec<GroupRoleBinding>> {
+    async fn list_group_bindings(&self) -> Result<Vec<GroupRoleBinding>> {
         let rows = sqlx::query(
             r#"SELECT group_name, role, created_at FROM group_role_bindings ORDER BY group_name"#,
         )
@@ -97,7 +131,7 @@ impl ScopeRepo {
             .collect()
     }
 
-    pub async fn create_scope_grant(
+    async fn create_scope_grant(
         &self,
         principal_id: &str,
         scope_type: &str,
@@ -120,7 +154,7 @@ impl ScopeRepo {
         Ok(())
     }
 
-    pub async fn list_scope_grants(&self) -> Result<Vec<ScopeGrant>> {
+    async fn list_scope_grants(&self) -> Result<Vec<ScopeGrant>> {
         let rows = sqlx::query(
             r#"SELECT principal_id, scope_type, scope_id, role, created_at
                FROM principal_scopes ORDER BY principal_id, scope_type, scope_id"#,
@@ -142,7 +176,7 @@ impl ScopeRepo {
             .collect()
     }
 
-    pub async fn has_scope_role(
+    async fn has_scope_role(
         &self,
         principal_id: &str,
         scope_type: &str,
@@ -200,17 +234,32 @@ pub struct BuildJob {
     pub updated_at: String,
 }
 
+#[async_trait::async_trait]
+pub trait BuildQueueRepo: Send + Sync {
+    async fn enqueue(&self, build_id: Uuid, project_id: &str, max_retries: u32) -> Result<BuildJob>;
+    async fn get_by_id(&self, id: &str) -> Result<Option<BuildJob>>;
+    async fn list_project(&self, project_id: &str, limit: i64) -> Result<Vec<BuildJob>>;
+    async fn cancel_by_build(&self, project_id: &str, build_id: Uuid) -> Result<Option<BuildJob>>;
+    async fn lease_next(&self, worker_id: &str, lease_seconds: u64) -> Result<Option<BuildJob>>;
+    async fn mark_running(&self, job_id: &str) -> Result<()>;
+    async fn mark_success(&self, job_id: &str) -> Result<()>;
+    async fn mark_failure_retry_or_deadletter(&self, job_id: &str, error: &str, backoff_seconds: u64) -> Result<String>;
+}
+
 #[derive(Clone)]
-pub struct BuildQueueRepo {
+pub struct SqliteBuildQueueRepo {
     storage: Storage,
 }
 
-impl BuildQueueRepo {
+impl SqliteBuildQueueRepo {
     pub fn new(storage: Storage) -> Self {
         Self { storage }
     }
+}
 
-    pub async fn enqueue(
+#[async_trait::async_trait]
+impl BuildQueueRepo for SqliteBuildQueueRepo {
+    async fn enqueue(
         &self,
         build_id: Uuid,
         project_id: &str,
@@ -239,7 +288,7 @@ impl BuildQueueRepo {
             .ok_or_else(|| Error::NotFound(format!("job {id}")))
     }
 
-    pub async fn get_by_id(&self, id: &str) -> Result<Option<BuildJob>> {
+    async fn get_by_id(&self, id: &str) -> Result<Option<BuildJob>> {
         let row = sqlx::query(
             r#"SELECT id, build_id, project_id, status, attempts, max_retries, leased_until,
                       worker_id, next_attempt_at, last_error, created_at, updated_at
@@ -251,7 +300,7 @@ impl BuildQueueRepo {
         row.map(row_to_job).transpose()
     }
 
-    pub async fn list_project(&self, project_id: &str, limit: i64) -> Result<Vec<BuildJob>> {
+    async fn list_project(&self, project_id: &str, limit: i64) -> Result<Vec<BuildJob>> {
         let rows = sqlx::query(
             r#"SELECT id, build_id, project_id, status, attempts, max_retries, leased_until,
                       worker_id, next_attempt_at, last_error, created_at, updated_at
@@ -267,7 +316,7 @@ impl BuildQueueRepo {
         rows.into_iter().map(row_to_job).collect()
     }
 
-    pub async fn cancel_by_build(
+    async fn cancel_by_build(
         &self,
         project_id: &str,
         build_id: Uuid,
@@ -298,7 +347,7 @@ impl BuildQueueRepo {
         row.map(row_to_job).transpose()
     }
 
-    pub async fn lease_next(
+    async fn lease_next(
         &self,
         worker_id: &str,
         lease_seconds: u64,
@@ -332,7 +381,7 @@ impl BuildQueueRepo {
         self.get_by_id(&id).await
     }
 
-    pub async fn mark_running(&self, job_id: &str) -> Result<()> {
+    async fn mark_running(&self, job_id: &str) -> Result<()> {
         sqlx::query(
             r#"UPDATE build_jobs
                SET status='running', attempts=attempts+1, updated_at=?
@@ -345,7 +394,7 @@ impl BuildQueueRepo {
         Ok(())
     }
 
-    pub async fn mark_success(&self, job_id: &str) -> Result<()> {
+    async fn mark_success(&self, job_id: &str) -> Result<()> {
         sqlx::query(
             r#"UPDATE build_jobs
                SET status='succeeded', leased_until=NULL, worker_id=NULL, updated_at=?
@@ -358,7 +407,7 @@ impl BuildQueueRepo {
         Ok(())
     }
 
-    pub async fn mark_failure_retry_or_deadletter(
+    async fn mark_failure_retry_or_deadletter(
         &self,
         job_id: &str,
         error: &str,

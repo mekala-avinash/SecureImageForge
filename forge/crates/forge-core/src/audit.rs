@@ -25,17 +25,34 @@ impl Outcome {
     }
 }
 
+#[async_trait::async_trait]
+pub trait AuditLog: Send + Sync {
+    async fn record(
+        &self,
+        actor: &str,
+        action: &str,
+        target: Option<&str>,
+        outcome: Outcome,
+        details: Option<serde_json::Value>,
+    ) -> Result<()>;
+
+    async fn recent(&self, limit: i64) -> Result<Vec<AuditEntry>>;
+}
+
 #[derive(Clone)]
-pub struct AuditLog {
+pub struct SqliteAuditLog {
     storage: Storage,
 }
 
-impl AuditLog {
+impl SqliteAuditLog {
     pub fn new(storage: Storage) -> Self {
         Self { storage }
     }
+}
 
-    pub async fn record(
+#[async_trait::async_trait]
+impl AuditLog for SqliteAuditLog {
+    async fn record(
         &self,
         actor: &str,
         action: &str,
@@ -61,7 +78,7 @@ impl AuditLog {
         Ok(())
     }
 
-    pub async fn recent(&self, limit: i64) -> Result<Vec<AuditEntry>> {
+    async fn recent(&self, limit: i64) -> Result<Vec<AuditEntry>> {
         use sqlx::Row;
         let rows = sqlx::query(
             r#"SELECT id, actor, action, target, outcome, details, created_at
@@ -103,7 +120,7 @@ mod tests {
     #[tokio::test]
     async fn record_and_recent_round_trip() {
         let storage = Storage::open_memory().await.unwrap();
-        let log = AuditLog::new(storage);
+        let log = SqliteAuditLog::new(storage);
         log.record("admin", "build.start", Some("foo"), Outcome::Success, None)
             .await
             .unwrap();

@@ -20,6 +20,7 @@ use crate::{Error, Result};
 const POLICY_CIS: &str = include_str!("../../policies/cis.rego");
 const POLICY_HIPAA: &str = include_str!("../../policies/hipaa.rego");
 const POLICY_SOC2: &str = include_str!("../../policies/soc2.rego");
+const POLICY_FEDRAMP_MODERATE: &str = include_str!("../../policies/fedramp_moderate.rego");
 
 #[derive(Debug, Clone, Default)]
 pub struct OpaConfig {
@@ -55,7 +56,11 @@ impl OpaPolicyEngine {
             ComplianceProfile::Soc2 => Some(("soc2.rego", POLICY_SOC2, "data.forge.soc2.deny")),
             // PciDss reuses SOC2 controls until a dedicated bundle ships.
             ComplianceProfile::PciDss => Some(("soc2.rego", POLICY_SOC2, "data.forge.soc2.deny")),
-            ComplianceProfile::FedrampModerate => None,
+            ComplianceProfile::FedrampModerate => Some((
+                "fedramp_moderate.rego",
+                POLICY_FEDRAMP_MODERATE,
+                "data.forge.fedramp_moderate.deny",
+            )),
         }
     }
 }

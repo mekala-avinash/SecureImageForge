@@ -25,14 +25,21 @@ use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::audit::{AuditEntry, Outcome};
+use crate::audit::{AuditEntry, AuditLog, Outcome};
 use crate::domain::{
     Architecture, BuildArtifact, BuildRecord, BuildStatus, Sbom, ScanResult, Severity,
     Vulnerability,
 };
-use crate::provenance::Statement;
-use crate::rbac::{CreatedPrincipal, Principal, Role};
-use crate::repo::BuildSummary;
+use crate::drift::{DriftDetector, DriftSnapshot};
+use crate::logs::LogStore;
+use std::path::PathBuf;
+use std::sync::Arc;
+use crate::provenance::{ProvenanceRepo, Statement};
+use crate::rbac::{CreatedPrincipal, Principal, PrincipalRepo, Role};
+use crate::repo::{BuildRepo, BuildSummary};
+use crate::team::{
+    BuildJob, BuildQueueRepo, GroupRoleBinding, ScopeGrant, ScopeRepo, TeamRepo,
+};
 use crate::{Error, Result};
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations_postgres");
@@ -72,13 +79,20 @@ impl PgBuildRepo {
     pub fn new(storage: PgStorage) -> Self {
         Self { storage }
     }
+}
 
-    pub async fn insert(&self, record: &BuildRecord) -> Result<()> {
+#[async_trait::async_trait]
+impl BuildRepo for PgBuildRepo {
+    async fn insert(&self, record: &BuildRecord) -> Result<()> {
+        self.insert_for_project(record, "default-project").await
+    }
+
+    async fn insert_for_project(&self, record: &BuildRecord, project_id: &str) -> Result<()> {
         let spec_json = serde_json::to_string(&record.spec)?;
         sqlx::query(
             r#"INSERT INTO builds (id, name, runtime, base_image, status, spec_json,
-                                   created_at, started_at, finished_at, log_path)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"#,
+                                   created_at, started_at, finished_at, log_path, project_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)"#,
         )
         .bind(record.id.to_string())
         .bind(&record.spec.name)
@@ -90,12 +104,13 @@ impl PgBuildRepo {
         .bind(record.started_at)
         .bind(record.finished_at)
         .bind(record.log_path.clone())
+        .bind(project_id)
         .execute(self.storage.pool())
         .await?;
         Ok(())
     }
 
-    pub async fn update_status(
+    async fn update_status(
         &self,
         id: Uuid,
         status: BuildStatus,
@@ -121,34 +136,49 @@ impl PgBuildRepo {
         Ok(())
     }
 
-    pub async fn list(&self, limit: i64) -> Result<Vec<BuildSummary>> {
+    async fn list(&self, limit: i64) -> Result<Vec<BuildSummary>> {
+        self.list_project("default-project", limit).await
+    }
+
+    async fn list_project(&self, project_id: &str, limit: i64) -> Result<Vec<BuildSummary>> {
         let rows = sqlx::query(
             r#"SELECT id, name, runtime, base_image, status, created_at, finished_at
-               FROM builds ORDER BY created_at DESC LIMIT $1"#,
+               FROM builds WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2"#,
         )
+        .bind(project_id)
         .bind(limit)
         .fetch_all(self.storage.pool())
         .await?;
         Ok(rows.into_iter().map(row_to_summary).collect())
     }
 
-    pub async fn get_summary(&self, id: Uuid) -> Result<Option<BuildSummary>> {
+    async fn get_summary(&self, id: Uuid) -> Result<Option<BuildSummary>> {
+        self.get_summary_in_project("default-project", id).await
+    }
+
+    async fn get_summary_in_project(&self, project_id: &str, id: Uuid) -> Result<Option<BuildSummary>> {
         let row = sqlx::query(
             r#"SELECT id, name, runtime, base_image, status, created_at, finished_at
-               FROM builds WHERE id = $1"#,
+               FROM builds WHERE id = $1 AND project_id = $2"#,
         )
         .bind(id.to_string())
+        .bind(project_id)
         .fetch_optional(self.storage.pool())
         .await?;
         Ok(row.map(row_to_summary))
     }
 
-    pub async fn get_record(&self, id: Uuid) -> Result<Option<BuildRecord>> {
+    async fn get_record(&self, id: Uuid) -> Result<Option<BuildRecord>> {
+        self.get_record_in_project("default-project", id).await
+    }
+
+    async fn get_record_in_project(&self, project_id: &str, id: Uuid) -> Result<Option<BuildRecord>> {
         let row = sqlx::query(
             r#"SELECT id, status, spec_json, created_at, started_at, finished_at, log_path
-               FROM builds WHERE id = $1"#,
+               FROM builds WHERE id = $1 AND project_id = $2"#,
         )
         .bind(id.to_string())
+        .bind(project_id)
         .fetch_optional(self.storage.pool())
         .await?;
         let Some(r) = row else {
@@ -176,7 +206,7 @@ impl PgBuildRepo {
         }))
     }
 
-    pub async fn save_artifact(&self, build_id: Uuid, artifact: &BuildArtifact) -> Result<()> {
+    async fn save_artifact(&self, build_id: Uuid, artifact: &BuildArtifact) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO artifacts (build_id, digest, registry_ref, bytes, architecture)
                VALUES ($1, $2, $3, $4, $5)
@@ -194,7 +224,7 @@ impl PgBuildRepo {
         Ok(())
     }
 
-    pub async fn list_artifacts(&self, build_id: Uuid) -> Result<Vec<BuildArtifact>> {
+    async fn list_artifacts(&self, build_id: Uuid) -> Result<Vec<BuildArtifact>> {
         let rows = sqlx::query(
             r#"SELECT digest, registry_ref, bytes, architecture
                FROM artifacts WHERE build_id = $1"#,
@@ -215,7 +245,7 @@ impl PgBuildRepo {
             .collect()
     }
 
-    pub async fn save_scan(&self, build_id: Uuid, scan: &ScanResult) -> Result<()> {
+    async fn save_scan(&self, build_id: Uuid, scan: &ScanResult) -> Result<()> {
         let findings: serde_json::Value = serde_json::to_value(&scan.findings)?;
         sqlx::query(
             r#"INSERT INTO scans (build_id, scanner, scanned_at, findings)
@@ -234,7 +264,7 @@ impl PgBuildRepo {
         Ok(())
     }
 
-    pub async fn get_scan(&self, build_id: Uuid) -> Result<Option<ScanResult>> {
+    async fn get_scan(&self, build_id: Uuid) -> Result<Option<ScanResult>> {
         let row = sqlx::query(
             r#"SELECT scanner, scanned_at, findings FROM scans WHERE build_id = $1"#,
         )
@@ -257,7 +287,7 @@ impl PgBuildRepo {
         }
     }
 
-    pub async fn save_sbom(&self, build_id: Uuid, sbom: &Sbom) -> Result<()> {
+    async fn save_sbom(&self, build_id: Uuid, sbom: &Sbom) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO sboms (build_id, format, document)
                VALUES ($1, $2, $3)
@@ -273,7 +303,7 @@ impl PgBuildRepo {
         Ok(())
     }
 
-    pub async fn get_sbom(&self, build_id: Uuid) -> Result<Option<Sbom>> {
+    async fn get_sbom(&self, build_id: Uuid) -> Result<Option<Sbom>> {
         let row = sqlx::query(r#"SELECT format, document FROM sboms WHERE build_id = $1"#)
             .bind(build_id.to_string())
             .fetch_optional(self.storage.pool())
@@ -284,12 +314,82 @@ impl PgBuildRepo {
         }))
     }
 
-    pub async fn get_log_path(&self, build_id: Uuid) -> Result<Option<String>> {
+    async fn get_log_path(&self, build_id: Uuid) -> Result<Option<String>> {
         let row = sqlx::query(r#"SELECT log_path FROM builds WHERE id = $1"#)
             .bind(build_id.to_string())
             .fetch_optional(self.storage.pool())
             .await?;
         Ok(row.and_then(|r| r.try_get::<Option<String>, _>("log_path").ok().flatten()))
+    }
+
+    async fn get_project_id(&self, build_id: Uuid) -> Result<Option<String>> {
+        let row = sqlx::query(r#"SELECT project_id FROM builds WHERE id = $1"#)
+            .bind(build_id.to_string())
+            .fetch_optional(self.storage.pool())
+            .await?;
+        Ok(row.map(|r| r.get("project_id")))
+    }
+
+    async fn drift_targets(&self, limit: i64) -> Result<Vec<(Uuid, String)>> {
+        let rows = sqlx::query(
+            r#"SELECT b.id, COALESCE(a.registry_ref, a.digest) AS image_ref
+               FROM builds b
+               JOIN artifacts a ON a.build_id = b.id
+               WHERE b.status = 'succeeded'
+               ORDER BY b.finished_at DESC LIMIT $1"#,
+        )
+        .bind(limit)
+        .fetch_all(self.storage.pool())
+        .await?;
+        rows.into_iter()
+            .map(|r| {
+                let id: String = r.get("id");
+                let image_ref: String = r.get("image_ref");
+                Ok((
+                    Uuid::parse_str(&id).map_err(|e| Error::Internal(anyhow::anyhow!(e)))?,
+                    image_ref,
+                ))
+            })
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// logs
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct PgLogStore {
+    storage: PgStorage,
+}
+
+impl PgLogStore {
+    pub fn new(storage: PgStorage) -> Self {
+        Self { storage }
+    }
+}
+
+#[async_trait::async_trait]
+impl LogStore for PgLogStore {
+    async fn write(&self, build_id: Uuid, content: &str) -> Result<PathBuf> {
+        sqlx::query(
+            r#"INSERT INTO build_logs (build_id, content)
+               VALUES ($1, $2)
+               ON CONFLICT (build_id) DO UPDATE SET content = EXCLUDED.content"#,
+        )
+        .bind(build_id.to_string())
+        .bind(content)
+        .execute(self.storage.pool())
+        .await?;
+        Ok(PathBuf::from(format!("pg://{build_id}")))
+    }
+
+    async fn read(&self, build_id: Uuid) -> Result<Option<String>> {
+        let row = sqlx::query(r#"SELECT content FROM build_logs WHERE build_id = $1"#)
+            .bind(build_id.to_string())
+            .fetch_optional(self.storage.pool())
+            .await?;
+        Ok(row.map(|r| r.get("content")))
     }
 }
 
@@ -306,8 +406,11 @@ impl PgAuditLog {
     pub fn new(storage: PgStorage) -> Self {
         Self { storage }
     }
+}
 
-    pub async fn record(
+#[async_trait::async_trait]
+impl AuditLog for PgAuditLog {
+    async fn record(
         &self,
         actor: &str,
         action: &str,
@@ -333,7 +436,7 @@ impl PgAuditLog {
         Ok(())
     }
 
-    pub async fn recent(&self, limit: i64) -> Result<Vec<AuditEntry>> {
+    async fn recent(&self, limit: i64) -> Result<Vec<AuditEntry>> {
         let rows = sqlx::query(
             r#"SELECT id, actor, action, target, outcome, details, created_at
                FROM audit_events ORDER BY id DESC LIMIT $1"#,
@@ -368,8 +471,11 @@ impl PgPrincipalRepo {
     pub fn new(storage: PgStorage) -> Self {
         Self { storage }
     }
+}
 
-    pub async fn create(&self, name: &str, role: Role) -> Result<CreatedPrincipal> {
+#[async_trait::async_trait]
+impl PrincipalRepo for PgPrincipalRepo {
+    async fn create(&self, name: &str, role: Role) -> Result<CreatedPrincipal> {
         let id = Uuid::new_v4().to_string();
         let token = format!("forge_{}", random_token());
         let token_hash = crate::rbac::hash_token(&token);
@@ -396,7 +502,7 @@ impl PgPrincipalRepo {
         })
     }
 
-    pub async fn list(&self) -> Result<Vec<Principal>> {
+    async fn list(&self) -> Result<Vec<Principal>> {
         let rows = sqlx::query(
             r#"SELECT id, name, role, created_at
                FROM principals WHERE revoked_at IS NULL ORDER BY created_at DESC"#,
@@ -417,7 +523,7 @@ impl PgPrincipalRepo {
             .collect())
     }
 
-    pub async fn revoke(&self, id: &str) -> Result<()> {
+    async fn revoke(&self, id: &str) -> Result<()> {
         sqlx::query(r#"UPDATE principals SET revoked_at = $1 WHERE id = $2"#)
             .bind(Utc::now())
             .bind(id)
@@ -426,7 +532,7 @@ impl PgPrincipalRepo {
         Ok(())
     }
 
-    pub async fn authenticate(&self, token: &str) -> Result<Option<Principal>> {
+    async fn authenticate(&self, token: &str) -> Result<Option<Principal>> {
         let hash = crate::rbac::hash_token(token);
         let row = sqlx::query(
             r#"SELECT id, name, role, created_at FROM principals
@@ -456,8 +562,11 @@ impl PgProvenanceRepo {
     pub fn new(storage: PgStorage) -> Self {
         Self { storage }
     }
+}
 
-    pub async fn save(
+#[async_trait::async_trait]
+impl ProvenanceRepo for PgProvenanceRepo {
+    async fn save(
         &self,
         build_id: Uuid,
         statement: &Statement,
@@ -481,7 +590,7 @@ impl PgProvenanceRepo {
         Ok(())
     }
 
-    pub async fn get(&self, build_id: Uuid) -> Result<Option<Statement>> {
+    async fn get(&self, build_id: Uuid) -> Result<Option<Statement>> {
         let row = sqlx::query(r#"SELECT predicate FROM provenance WHERE build_id = $1"#)
             .bind(build_id.to_string())
             .fetch_optional(self.storage.pool())
@@ -493,6 +602,471 @@ impl PgProvenanceRepo {
                 Ok(Some(serde_json::from_value(predicate)?))
             }
         }
+    }
+}
+
+pub struct PgTeamRepo {
+    storage: PgStorage,
+}
+
+impl PgTeamRepo {
+    pub fn new(storage: PgStorage) -> Self {
+        Self { storage }
+    }
+}
+
+#[async_trait::async_trait]
+impl TeamRepo for PgTeamRepo {
+    async fn create_org(&self, id: &str, name: &str) -> Result<()> {
+        sqlx::query(r#"INSERT INTO organizations (id, name, created_at) VALUES ($1, $2, $3)"#)
+            .bind(id)
+            .bind(name)
+            .bind(Utc::now())
+            .execute(self.storage.pool())
+            .await?;
+        Ok(())
+    }
+
+    async fn create_project(&self, id: &str, org_id: &str, name: &str) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO projects (id, organization_id, name, created_at) VALUES ($1, $2, $3, $4)"#,
+        )
+        .bind(id)
+        .bind(org_id)
+        .bind(name)
+        .bind(Utc::now())
+        .execute(self.storage.pool())
+        .await?;
+        Ok(())
+    }
+
+    async fn create_environment(&self, id: &str, project_id: &str, name: &str) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO environments (id, project_id, name, created_at) VALUES ($1, $2, $3, $4)"#,
+        )
+        .bind(id)
+        .bind(project_id)
+        .bind(name)
+        .bind(Utc::now())
+        .execute(self.storage.pool())
+        .await?;
+        Ok(())
+    }
+}
+
+pub struct PgScopeRepo {
+    storage: PgStorage,
+}
+
+impl PgScopeRepo {
+    pub fn new(storage: PgStorage) -> Self {
+        Self { storage }
+    }
+}
+
+#[async_trait::async_trait]
+impl ScopeRepo for PgScopeRepo {
+    async fn bind_group_role(&self, group_name: &str, role: Role) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO group_role_bindings (group_name, role, created_at)
+               VALUES ($1, $2, $3)
+               ON CONFLICT(group_name) DO UPDATE SET role = EXCLUDED.role"#,
+        )
+        .bind(group_name)
+        .bind(role.as_str())
+        .bind(Utc::now())
+        .execute(self.storage.pool())
+        .await?;
+        Ok(())
+    }
+
+    async fn list_group_bindings(&self) -> Result<Vec<GroupRoleBinding>> {
+        let rows = sqlx::query(
+            r#"SELECT group_name, role, created_at FROM group_role_bindings ORDER BY group_name"#,
+        )
+        .fetch_all(self.storage.pool())
+        .await?;
+        rows.into_iter()
+            .map(|r| {
+                let role: String = r.get("role");
+                let created_at: chrono::DateTime<Utc> = r.get("created_at");
+                Ok(GroupRoleBinding {
+                    group_name: r.get("group_name"),
+                    role: Role::parse(&role)
+                        .ok_or_else(|| Error::Internal(anyhow::anyhow!("unknown role: {role}")))?,
+                    created_at: created_at.to_rfc3339(),
+                })
+            })
+            .collect()
+    }
+
+    async fn create_scope_grant(
+        &self,
+        principal_id: &str,
+        scope_type: &str,
+        scope_id: &str,
+        role: Role,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO principal_scopes (principal_id, scope_type, scope_id, role, created_at)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT(principal_id, scope_type, scope_id)
+               DO UPDATE SET role = EXCLUDED.role"#,
+        )
+        .bind(principal_id)
+        .bind(scope_type)
+        .bind(scope_id)
+        .bind(role.as_str())
+        .bind(Utc::now())
+        .execute(self.storage.pool())
+        .await?;
+        Ok(())
+    }
+
+    async fn list_scope_grants(&self) -> Result<Vec<ScopeGrant>> {
+        let rows = sqlx::query(
+            r#"SELECT principal_id, scope_type, scope_id, role, created_at
+               FROM principal_scopes ORDER BY principal_id, scope_type, scope_id"#,
+        )
+        .fetch_all(self.storage.pool())
+        .await?;
+        rows.into_iter()
+            .map(|r| {
+                let role: String = r.get("role");
+                let created_at: chrono::DateTime<Utc> = r.get("created_at");
+                Ok(ScopeGrant {
+                    principal_id: r.get("principal_id"),
+                    scope_type: r.get("scope_type"),
+                    scope_id: r.get("scope_id"),
+                    role: Role::parse(&role)
+                        .ok_or_else(|| Error::Internal(anyhow::anyhow!("unknown role: {role}")))?,
+                    created_at: created_at.to_rfc3339(),
+                })
+            })
+            .collect()
+    }
+
+    async fn has_scope_role(
+        &self,
+        principal_id: &str,
+        scope_type: &str,
+        scope_id: &str,
+        min_role: Role,
+    ) -> Result<bool> {
+        let row = sqlx::query(
+            r#"SELECT role FROM principal_scopes
+               WHERE principal_id = $1 AND scope_type = $2 AND scope_id = $3"#,
+        )
+        .bind(principal_id)
+        .bind(scope_type)
+        .bind(scope_id)
+        .fetch_optional(self.storage.pool())
+        .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let role: String = row.get("role");
+        let role = Role::parse(&role)
+            .ok_or_else(|| Error::Internal(anyhow::anyhow!("unknown role: {role}")))?;
+        Ok(role.rank() >= min_role.rank())
+    }
+}
+
+pub struct PgBuildQueueRepo {
+    storage: PgStorage,
+}
+
+impl PgBuildQueueRepo {
+    pub fn new(storage: PgStorage) -> Self {
+        Self { storage }
+    }
+}
+
+#[async_trait::async_trait]
+impl BuildQueueRepo for PgBuildQueueRepo {
+    async fn enqueue(
+        &self,
+        build_id: Uuid,
+        project_id: &str,
+        max_retries: u32,
+    ) -> Result<BuildJob> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        sqlx::query(
+            r#"INSERT INTO build_jobs (
+                    id, build_id, project_id, status, attempts, max_retries,
+                    leased_until, worker_id, next_attempt_at, last_error,
+                    created_at, updated_at
+               ) VALUES ($1, $2, $3, 'queued', 0, $4, NULL, NULL, $5, NULL, $6, $7)"#,
+        )
+        .bind(&id)
+        .bind(build_id.to_string())
+        .bind(project_id)
+        .bind(max_retries as i64)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(self.storage.pool())
+        .await?;
+        self.get_by_id(&id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("job {id}")))
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Option<BuildJob>> {
+        let row = sqlx::query(
+            r#"SELECT id, build_id, project_id, status, attempts, max_retries, leased_until,
+                      worker_id, next_attempt_at, last_error, created_at, updated_at
+               FROM build_jobs WHERE id = $1"#,
+        )
+        .bind(id)
+        .fetch_optional(self.storage.pool())
+        .await?;
+        row.map(pg_row_to_job).transpose()
+    }
+
+    async fn list_project(&self, project_id: &str, limit: i64) -> Result<Vec<BuildJob>> {
+        let rows = sqlx::query(
+            r#"SELECT id, build_id, project_id, status, attempts, max_retries, leased_until,
+                      worker_id, next_attempt_at, last_error, created_at, updated_at
+               FROM build_jobs
+               WHERE project_id = $1
+               ORDER BY created_at DESC
+               LIMIT $2"#,
+        )
+        .bind(project_id)
+        .bind(limit)
+        .fetch_all(self.storage.pool())
+        .await?;
+        rows.into_iter().map(pg_row_to_job).collect()
+    }
+
+    async fn cancel_by_build(
+        &self,
+        project_id: &str,
+        build_id: Uuid,
+    ) -> Result<Option<BuildJob>> {
+        let now = Utc::now();
+        sqlx::query(
+            r#"UPDATE build_jobs
+               SET status = 'canceled', updated_at = $1, worker_id = NULL, leased_until = NULL
+               WHERE project_id = $2 AND build_id = $3 AND status IN ('queued','leased','running')"#,
+        )
+        .bind(now)
+        .bind(project_id)
+        .bind(build_id.to_string())
+        .execute(self.storage.pool())
+        .await?;
+        let row = sqlx::query(
+            r#"SELECT id, build_id, project_id, status, attempts, max_retries, leased_until,
+                      worker_id, next_attempt_at, last_error, created_at, updated_at
+               FROM build_jobs
+               WHERE project_id = $1 AND build_id = $2
+               ORDER BY created_at DESC
+               LIMIT 1"#,
+        )
+        .bind(project_id)
+        .bind(build_id.to_string())
+        .fetch_optional(self.storage.pool())
+        .await?;
+        row.map(pg_row_to_job).transpose()
+    }
+
+    async fn lease_next(
+        &self,
+        worker_id: &str,
+        lease_seconds: u64,
+    ) -> Result<Option<BuildJob>> {
+        let now = Utc::now();
+        let row = sqlx::query(
+            r#"SELECT id FROM build_jobs
+               WHERE status = 'queued' AND next_attempt_at <= $1
+               ORDER BY created_at ASC
+               LIMIT 1"#,
+        )
+        .bind(now)
+        .fetch_optional(self.storage.pool())
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let id: String = row.get("id");
+        let leased_until = now + chrono::Duration::seconds(lease_seconds as i64);
+        sqlx::query(
+            r#"UPDATE build_jobs
+               SET status='leased', worker_id=$1, leased_until=$2, updated_at=$3
+               WHERE id = $4 AND status = 'queued'"#,
+        )
+        .bind(worker_id)
+        .bind(leased_until)
+        .bind(now)
+        .bind(&id)
+        .execute(self.storage.pool())
+        .await?;
+        self.get_by_id(&id).await
+    }
+
+    async fn mark_running(&self, job_id: &str) -> Result<()> {
+        sqlx::query(
+            r#"UPDATE build_jobs
+               SET status='running', attempts=attempts+1, updated_at=$1
+               WHERE id = $2"#,
+        )
+        .bind(Utc::now())
+        .bind(job_id)
+        .execute(self.storage.pool())
+        .await?;
+        Ok(())
+    }
+
+    async fn mark_success(&self, job_id: &str) -> Result<()> {
+        sqlx::query(
+            r#"UPDATE build_jobs
+               SET status='succeeded', leased_until=NULL, worker_id=NULL, updated_at=$1
+               WHERE id = $2"#,
+        )
+        .bind(Utc::now())
+        .bind(job_id)
+        .execute(self.storage.pool())
+        .await?;
+        Ok(())
+    }
+
+    async fn mark_failure_retry_or_deadletter(
+        &self,
+        job_id: &str,
+        error: &str,
+        backoff_seconds: u64,
+    ) -> Result<String> {
+        let job = self
+            .get_by_id(job_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("job {job_id}")))?;
+        let status = if job.attempts >= job.max_retries {
+            "deadletter"
+        } else {
+            "queued"
+        };
+        let next_attempt = Utc::now() + chrono::Duration::seconds(backoff_seconds as i64);
+        sqlx::query(
+            r#"UPDATE build_jobs
+               SET status=$1, last_error=$2, next_attempt_at=$3, leased_until=NULL, worker_id=NULL, updated_at=$4
+               WHERE id = $5"#,
+        )
+        .bind(status)
+        .bind(error)
+        .bind(next_attempt)
+        .bind(Utc::now())
+        .bind(job_id)
+        .execute(self.storage.pool())
+        .await?;
+        Ok(status.into())
+    }
+}
+
+fn pg_row_to_job(r: sqlx::postgres::PgRow) -> Result<BuildJob> {
+    let build_id: String = r.get("build_id");
+    let created_at: chrono::DateTime<Utc> = r.get("created_at");
+    let updated_at: chrono::DateTime<Utc> = r.get("updated_at");
+    let next_attempt_at: chrono::DateTime<Utc> = r.get("next_attempt_at");
+    let leased_until: Option<chrono::DateTime<Utc>> = r.get("leased_until");
+    
+    Ok(BuildJob {
+        id: r.get("id"),
+        build_id,
+        project_id: r.get("project_id"),
+        status: r.get("status"),
+        attempts: r.get::<i32, _>("attempts") as i64,
+        max_retries: r.get::<i32, _>("max_retries") as i64,
+        leased_until: leased_until.map(|d| d.to_rfc3339()),
+        worker_id: r.get("worker_id"),
+        next_attempt_at: next_attempt_at.to_rfc3339(),
+        last_error: r.get("last_error"),
+        created_at: created_at.to_rfc3339(),
+        updated_at: updated_at.to_rfc3339(),
+    })
+}
+
+pub struct PgDriftDetector {
+    pub repo: Arc<dyn BuildRepo>,
+    pub storage: PgStorage,
+    pub scanner: Arc<dyn crate::tooling::Scanner>,
+    pub audit: Arc<dyn crate::audit::AuditLog>,
+}
+
+impl PgDriftDetector {
+    async fn persist(&self, snap: &DriftSnapshot, scan: &crate::domain::ScanResult) -> Result<()> {
+        let findings = serde_json::to_string(&scan.findings)?;
+        sqlx::query(
+            r#"INSERT INTO drift_snapshots (build_id, scanned_at, scanner, findings, new_critical, new_high)
+               VALUES ($1, $2, $3, $4, $5, $6)"#,
+        )
+        .bind(&snap.build_id)
+        .bind(&snap.scanned_at)
+        .bind(&snap.scanner)
+        .bind(findings)
+        .bind(snap.new_critical)
+        .bind(snap.new_high)
+        .execute(self.storage.pool())
+        .await?;
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DriftDetector for PgDriftDetector {
+    async fn rescan_one(&self, build_id: Uuid, image_ref: &str) -> Result<DriftSnapshot> {
+        let baseline = self
+            .repo
+            .get_scan(build_id)
+            .await?
+            .map(|r| crate::drift::ids_by_severity(&r))
+            .unwrap_or_default();
+        let now = self.scanner.scan(image_ref).await?;
+        let snapshot = crate::drift::compute_snapshot(build_id, &baseline, &now);
+        self.persist(&snapshot, &now).await?;
+        let _ = self
+            .audit
+            .record(
+                "drift-scheduler",
+                "drift.rescan",
+                Some(&build_id.to_string()),
+                crate::audit::Outcome::Success,
+                Some(serde_json::json!({
+                    "new_critical": snapshot.new_critical,
+                    "new_high": snapshot.new_high,
+                })),
+            )
+            .await;
+        Ok(snapshot)
+    }
+
+    async fn list(&self, build_id: Uuid, limit: i64) -> Result<Vec<DriftSnapshot>> {
+        let rows = sqlx::query(
+            r#"SELECT id, build_id, scanner, scanned_at, findings, new_critical, new_high
+               FROM drift_snapshots WHERE build_id = $1 ORDER BY id DESC LIMIT $2"#,
+        )
+        .bind(build_id.to_string())
+        .bind(limit)
+        .fetch_all(self.storage.pool())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let findings_str: String = r.get("findings");
+                let findings: Vec<crate::domain::Vulnerability> =
+                    serde_json::from_str(&findings_str).unwrap_or_default();
+                DriftSnapshot {
+                    id: r.get::<i64, _>("id"),
+                    build_id: r.get("build_id"),
+                    scanner: r.get("scanner"),
+                    scanned_at: r.get("scanned_at"),
+                    new_critical: r.get::<i64, _>("new_critical"),
+                    new_high: r.get::<i64, _>("new_high"),
+                    findings_count: findings.len(),
+                }
+            })
+            .collect())
     }
 }
 

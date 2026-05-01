@@ -18,6 +18,7 @@ use crate::{Error, Result};
 pub struct GrypeConfig {
     pub grype_path: Option<PathBuf>,
     pub bundled_prefix: Option<PathBuf>,
+    pub offline_mode: bool,
 }
 
 pub struct GrypeScanner {
@@ -42,11 +43,24 @@ impl GrypeScanner {
 impl Scanner for GrypeScanner {
     async fn scan(&self, image_ref: &str) -> Result<ScanResult> {
         let grype = self.grype()?;
-        let spec = ProcessSpec::new(grype.to_string_lossy().to_string())
+        
+        if !self.config.offline_mode {
+            let update_spec = ProcessSpec::new(grype.to_string_lossy().to_string())
+                .arg("db")
+                .arg("update");
+            let _ = self.runner.run(update_spec).await; // Ignore failure, try best-effort update
+        }
+
+        let mut spec = ProcessSpec::new(grype.to_string_lossy().to_string())
             .arg(image_ref)
             .arg("-o")
             .arg("json")
             .arg("--quiet");
+            
+        if self.config.offline_mode {
+            spec = spec.env("GRYPE_DB_AUTO_UPDATE", "false");
+        }
+            
         let out = self.runner.run(spec).await?;
         if out.status != 0 {
             return Err(Error::ToolFailure {

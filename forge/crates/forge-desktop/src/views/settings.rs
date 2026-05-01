@@ -11,64 +11,130 @@ pub fn SettingsView() -> Element {
     let mut last = use_signal::<Option<String>>(|| None);
     let mut decision = use_signal::<Option<UpdateDecision>>(|| None);
     let mut error = use_signal::<Option<String>>(|| None);
+    
+    // Config fields
+    let mut buildkit_addr = use_signal(|| state.config.buildkit.addr.clone());
+    let mut registry_target = use_signal(|| state.config.registry.default_target.clone().unwrap_or_default());
+    let mut updater_channel = use_signal(|| state.config.updater.channel.clone());
+    let mut saved = use_signal(|| false);
+    let mut save_error = use_signal::<Option<String>>(|| None);
 
     let state_for_closure = state.clone();
     let mut check = move || {
         error.set(None);
-        match updates::check(&state_for_closure) {
-            Ok(d) => {
-                decision.set(Some(d));
-                last.set(Some(now_iso()));
+        let state_for_async = state_for_closure.clone();
+        spawn(async move {
+            match updates::check_async(&state_for_async).await {
+                Ok(d) => {
+                    decision.set(Some(d));
+                    last.set(Some(now_iso()));
+                }
+                Err(e) => error.set(Some(e.to_string())),
             }
-            Err(e) => error.set(Some(e.to_string())),
-        }
+        });
     };
 
     rsx! {
         section { class: "view",
-            header { class: "view-header", h1 { "Settings" } }
+            header { class: "view-header", h1 { "Core Settings" } }
 
-            div { class: "panel",
-                h2 { "Application" }
-                div { class: "kv-grid",
-                    Kv { k: "Version", v: env!("CARGO_PKG_VERSION").to_string() }
-                    Kv { k: "Channel", v: state.config.updater.channel.clone() }
-                    Kv { k: "Feed",    v: state.config.updater.feed_url.clone() }
-                    Kv { k: "Auto check", v: state.config.updater.auto_check.to_string() }
+            div { class: "glass-card",
+                h2 { style: "margin-bottom: 20px;", "Kernel Configuration" }
+                form {
+                    class: "form",
+                    onsubmit: move |_| {
+                        save_error.set(None);
+                        saved.set(false);
+                        let mut new_config = (*state.config).clone();
+                        new_config.buildkit.addr = buildkit_addr.read().clone();
+                        
+                        let target = registry_target.read().clone();
+                        new_config.registry.default_target = if target.is_empty() { None } else { Some(target) };
+                        
+                        new_config.updater.channel = updater_channel.read().clone();
+                        
+                        match crate::services::config_service::save_config(&state.data_dir, &new_config) {
+                            Ok(_) => saved.set(true),
+                            Err(e) => save_error.set(Some(e.to_string())),
+                        }
+                    },
+                    div { 
+                        style: "display: grid; grid-template-columns: 1fr 1fr; gap: 24px;",
+                        div { class: "form-row",
+                            label { "BuildKit Endpoint" }
+                            input { r#type: "text", value: "{buildkit_addr.read()}", oninput: move |e| buildkit_addr.set(e.value()) }
+                        }
+                        div { class: "form-row",
+                            label { "Default Registry Mirror" }
+                            input { r#type: "text", value: "{registry_target.read()}", oninput: move |e| registry_target.set(e.value()) }
+                        }
+                    }
+                    div { class: "form-row",
+                        label { "Neural Update Channel" }
+                        select { 
+                            style: "width: 200px;",
+                            oninput: move |e| updater_channel.set(e.value()),
+                            option { value: "stable", selected: *updater_channel.read() == "stable", "Stable Release" }
+                            option { value: "beta", selected: *updater_channel.read() == "beta", "Beta Preview" }
+                        }
+                    }
+                    div { class: "form-actions",
+                        button { class: "btn-primary", r#type: "submit", "Commit Changes" }
+                    }
+                    if *saved.read() {
+                        p { style: "color: var(--ok); font-weight: 600; margin-top: 16px;", "Kernel state updated. Restart recommended for full sync." }
+                    }
+                    if let Some(e) = save_error.read().as_ref() {
+                        p { style: "color: var(--signal); font-weight: 600; margin-top: 16px;", "{e}" }
+                    }
                 }
             }
 
-            div { class: "panel",
-                h2 { "Updates" }
-                div { class: "row",
-                    button { class: "btn btn-primary", onclick: move |_| check(), "Check for updates" }
+            div { class: "glass-card",
+                h2 { style: "margin-bottom: 20px;", "Forge Updates" }
+                div { 
+                    style: "display: flex; align-items: center; gap: 20px; margin-bottom: 24px;",
+                    button { class: "btn-primary", onclick: move |_| check(), "Check for Updates" }
                     if let Some(t) = last.read().as_ref() {
-                        span { class: "muted", "Last checked: {t}" }
+                        span { class: "muted", style: "font-size: 12px;", "Last sync: {t}" }
                     }
                 }
                 {match decision.read().as_ref() {
-                    None => rsx! { p { class: "muted", "Click ‘Check for updates’ to query the feed." } },
+                    None => rsx! { p { class: "muted", "Initialize update check sequence." } },
                     Some(UpdateDecision::UpToDate) => rsx! {
-                        p { span { class: "badge badge-ok", "up to date" } }
+                        div {
+                            style: "display: flex; align-items: center; gap: 12px;",
+                            span { class: "status-badge ok", "UP TO DATE" }
+                            span { "System integrity verified at latest version." }
+                        }
                     },
                     Some(UpdateDecision::UpdateAvailable { from, to, release }) => rsx! {
                         div {
-                            p { span { class: "badge badge-warn", "update available" } " "
-                                "{from} → {to}" }
-                            p { class: "muted", "Platform: {release.platform}" }
-                            p { class: "muted", "URL: " code { "{release.url}" } }
-                            p { class: "muted", "SHA-256: " code { "{release.sha256}" } }
+                            style: "display: flex; flex-direction: column; gap: 12px;",
+                            div {
+                                style: "display: flex; align-items: center; gap: 12px;",
+                                span { class: "status-badge warn", "PATCH AVAILABLE" }
+                                span { style: "font-weight: 600;", "{from} → {to}" }
+                            }
+                            div { 
+                                class: "mono",
+                                style: "background: rgba(0,0,0,0.3); padding: 16px; border-radius: 8px; font-size: 11px; opacity: 0.8;",
+                                div { "Target: {release.platform}" }
+                                div { "Source: {release.url}" }
+                                div { "Digest: {release.sha256}" }
+                            }
                         }
                     },
                     Some(UpdateDecision::UpgradeRequired { current, minimum }) => rsx! {
                         div {
-                            p { span { class: "badge badge-fail", "upgrade required" } " "
-                                "{current} < {minimum}" }
+                            style: "display: flex; align-items: center; gap: 12px;",
+                            span { class: "status-badge fail", "UPGRADE MANDATORY" }
+                            span { "{current} below minimum threshold {minimum}" }
                         }
                     },
                 }}
                 if let Some(e) = error.read().as_ref() {
-                    p { class: "form-error", "{e}" }
+                    p { style: "color: var(--signal); font-weight: 600; margin-top: 16px;", "{e}" }
                 }
             }
         }

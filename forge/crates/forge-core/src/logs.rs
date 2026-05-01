@@ -8,12 +8,18 @@ use uuid::Uuid;
 
 use crate::Result;
 
+#[async_trait::async_trait]
+pub trait LogStore: Send + Sync {
+    async fn write(&self, build_id: Uuid, content: &str) -> Result<PathBuf>;
+    async fn read(&self, build_id: Uuid) -> Result<Option<String>>;
+}
+
 #[derive(Debug, Clone)]
-pub struct LogStore {
+pub struct FileLogStore {
     root: PathBuf,
 }
 
-impl LogStore {
+impl FileLogStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
@@ -30,15 +36,18 @@ impl LogStore {
         std::fs::create_dir_all(&self.root)?;
         Ok(())
     }
+}
 
-    pub fn write(&self, build_id: Uuid, content: &str) -> Result<PathBuf> {
+#[async_trait::async_trait]
+impl LogStore for FileLogStore {
+    async fn write(&self, build_id: Uuid, content: &str) -> Result<PathBuf> {
         self.ensure_root()?;
         let path = self.path_for(build_id);
         std::fs::write(&path, content)?;
         Ok(path)
     }
 
-    pub fn read(&self, build_id: Uuid) -> Result<Option<String>> {
+    async fn read(&self, build_id: Uuid) -> Result<Option<String>> {
         let path = self.path_for(build_id);
         if !path.exists() {
             return Ok(None);
@@ -55,18 +64,22 @@ mod tests {
     #[test]
     fn write_then_read_round_trip() {
         let dir = TempDir::new().unwrap();
-        let store = LogStore::new(dir.path().join("logs"));
+        let store = FileLogStore::new(dir.path().join("logs"));
         let id = Uuid::new_v4();
-        store.write(id, "hello world").unwrap();
-        let got = store.read(id).unwrap().unwrap();
-        assert_eq!(got, "hello world");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            store.write(id, "hello world").await.unwrap();
+            let got = store.read(id).await.unwrap().unwrap();
+            assert_eq!(got, "hello world");
+        });
     }
 
     #[test]
     fn missing_returns_none() {
         let dir = TempDir::new().unwrap();
-        let store = LogStore::new(dir.path().join("logs"));
-        let got = store.read(Uuid::new_v4()).unwrap();
+        let store = FileLogStore::new(dir.path().join("logs"));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let got = runtime.block_on(async { store.read(Uuid::new_v4()).await.unwrap() });
         assert!(got.is_none());
     }
 }

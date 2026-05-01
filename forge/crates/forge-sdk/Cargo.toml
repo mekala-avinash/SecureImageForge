@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Typed Rust client for the SecureImage Forge HTTP API."
+repository.workspace = true
 
 [dependencies]
 reqwest = { workspace = true }

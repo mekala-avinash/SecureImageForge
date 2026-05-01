@@ -23,11 +23,16 @@ pub fn start_build(state: &AppState, spec: BuildSpec) -> tokio::task::JoinHandle
     let cfg = state.config.clone();
     let repo = state.repo.clone();
     let logs = state.logs.clone();
+    let provenance = state.provenance.clone();
     let toolchain = state.toolchain.clone();
 
     runtime().spawn(async move {
         let runner: Arc<TokioRunner> = Arc::new(TokioRunner);
         let bundled_prefix = toolchain.prefix().map(|p| p.to_path_buf());
+
+        let registry_auth = forge_core::registry::resolve(runner.as_ref(), &cfg.registry.auth)
+            .await
+            .unwrap_or_default();
 
         let orchestrator = BuildOrchestrator {
             builder: Arc::new(BuildkitBuilder::new(
@@ -37,6 +42,7 @@ pub fn start_build(state: &AppState, spec: BuildSpec) -> tokio::task::JoinHandle
                     bundled_prefix: bundled_prefix.clone(),
                     registry_target: cfg.registry.default_target.clone(),
                     push: cfg.registry.default_push,
+                    registry_auth,
                     ..Default::default()
                 },
             )),
@@ -80,12 +86,19 @@ pub fn start_build(state: &AppState, spec: BuildSpec) -> tokio::task::JoinHandle
             policy: Arc::new(OpaPolicyEngine::new(
                 runner.clone(),
                 OpaConfig {
-                    bundled_prefix,
+                    bundled_prefix: bundled_prefix.clone(),
                     profiles: spec.compliance.iter().copied().collect(),
                     ..Default::default()
                 },
             )),
-            provenance: Some(ProvenanceRepo::new(repo.storage().clone())),
+            verifier: Some(Arc::new(CosignSigner::new(
+                runner.clone(),
+                CosignConfig {
+                    bundled_prefix: bundled_prefix.clone(),
+                    ..Default::default()
+                },
+            ))),
+            provenance: Some(provenance),
             repo,
             logs,
         };

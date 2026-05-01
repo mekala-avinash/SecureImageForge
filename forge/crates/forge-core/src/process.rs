@@ -82,6 +82,15 @@ pub trait ProcessRunner: Send + Sync {
 pub struct StreamingChild {
     pub lines: Box<dyn Stream<Item = Result<String>> + Send + Unpin>,
     pub wait: tokio::task::JoinHandle<Result<i32>>,
+    pub abort_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl Drop for StreamingChild {
+    fn drop(&mut self) {
+        if let Some(tx) = self.abort_tx.take() {
+            let _ = tx.send(());
+        }
+    }
 }
 
 #[derive(Default)]
@@ -119,14 +128,26 @@ impl ProcessRunner for TokioRunner {
         use futures::StreamExt as _;
         let mapped = merged.map(|r| r.map_err(Error::Io));
 
+        let (abort_tx, abort_rx) = tokio::sync::oneshot::channel::<()>();
+
         let wait = tokio::spawn(async move {
-            let status = child.wait().await.map_err(Error::Io)?;
-            Ok(status.code().unwrap_or(-1))
+            tokio::select! {
+                res = child.wait() => {
+                    let status = res.map_err(Error::Io)?;
+                    Ok(status.code().unwrap_or(-1))
+                }
+                _ = abort_rx => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    Err(Error::Internal(anyhow::anyhow!("Process was aborted")))
+                }
+            }
         });
 
         Ok(StreamingChild {
             lines: Box::new(Box::pin(mapped)),
             wait,
+            abort_tx: Some(abort_tx),
         })
     }
 }
@@ -156,6 +177,28 @@ pub fn resolve_tool(program: &str, bundled_prefix: Option<&Path>) -> Result<Path
             return Ok(exe_candidate);
         }
     }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let base_vendor = parent.join("vendor");
+            
+            // Check flat vendor
+            let candidate = base_vendor.join(program);
+            if candidate.is_file() { return Ok(candidate); }
+            let exe_candidate = base_vendor.join(format!("{program}.exe"));
+            if exe_candidate.is_file() { return Ok(exe_candidate); }
+
+            // Check platform-specific vendor (dev mode)
+            let os = if cfg!(target_os = "macos") { "darwin" } else { "linux" };
+            let arch = if cfg!(target_arch = "x86_64") { "amd64" } else { "arm64" };
+            let platform_vendor = base_vendor.join(os).join(arch);
+            
+            let candidate = platform_vendor.join(program);
+            if candidate.is_file() { return Ok(candidate); }
+            let exe_candidate = platform_vendor.join(format!("{program}.exe"));
+            if exe_candidate.is_file() { return Ok(exe_candidate); }
+        }
+    }
+
     which::which(program).map_err(|_| Error::ToolMissing {
         tool: program.to_string(),
     })
@@ -239,11 +282,18 @@ impl ProcessRunner for MockRunner {
         };
         let stream = futures::stream::iter(vec![Ok(line)]);
         let status = out.status;
-        let wait = tokio::spawn(async move { Ok(status) });
+        let (abort_tx, abort_rx) = tokio::sync::oneshot::channel::<()>();
+        let wait = tokio::spawn(async move {
+            tokio::select! {
+                _ = abort_rx => Err(Error::Internal(anyhow::anyhow!("Process was aborted"))),
+                _ = std::future::ready(()) => Ok(status),
+            }
+        });
         use futures::StreamExt as _;
         Ok(StreamingChild {
             lines: Box::new(Box::pin(stream.map(|r: Result<String>| r))),
             wait,
+            abort_tx: Some(abort_tx),
         })
     }
 }

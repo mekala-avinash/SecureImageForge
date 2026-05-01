@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Path, State};
@@ -87,7 +88,7 @@ async fn stream_log_for_project(
         let mut last_len = 0usize;
         let mut idle_ticks = 0u32;
         loop {
-            let content = logs.read(id).ok().flatten().unwrap_or_default();
+            let content = logs.read(id).await.ok().flatten().unwrap_or_default();
             if content.len() > last_len {
                 let chunk = content[last_len..].to_string();
                 last_len = content.len();
@@ -377,7 +378,7 @@ async fn get_log_for_project(
     require_project_scope(&s, &principal, project_id, Action::ReadBuild).await?;
     let id = Uuid::parse_str(id).map_err(|_| ApiError::BadRequest("invalid build id".into()))?;
     ensure_build_in_project(&s, project_id, id).await?;
-    let log = s.logs.read(id).map_err(ApiError::from)?;
+    let log = s.logs.read(id).await.map_err(ApiError::from)?;
     log.ok_or(ApiError::NotFound)
 }
 
@@ -673,7 +674,7 @@ pub async fn create_scope_grant(
 }
 
 async fn record_audit(
-    audit: &AuditLog,
+    audit: &Arc<dyn AuditLog>,
     principal: &Principal,
     action: &str,
     target: Option<&str>,
@@ -685,7 +686,7 @@ async fn record_audit(
 }
 
 pub async fn record_audit_with_details(
-    audit: &AuditLog,
+    audit: &Arc<dyn AuditLog>,
     actor: &str,
     action: &str,
     target: Option<&str>,

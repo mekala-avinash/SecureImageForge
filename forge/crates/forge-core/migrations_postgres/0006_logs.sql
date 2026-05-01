@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS build_logs (
+    build_id TEXT PRIMARY KEY REFERENCES builds(id) ON DELETE CASCADE,
+    content  TEXT NOT NULL
+);

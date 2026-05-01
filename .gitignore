@@ -85,6 +85,7 @@ forge/vendor/
 
 # Dioxus desktop
 forge/dist/
+forge/test_dist/
 
 # SQLite local data
 *.sqlite

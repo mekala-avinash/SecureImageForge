@@ -15,6 +15,12 @@
 
 - **System packages** (Linux desktop builds): `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libsoup-3.0-dev`, `pkg-config`.
 
+## Quick start (macOS / Linux)
+
+1. `cargo xtask dev-setup`          # download tools
+2. `buildkitd --rootless &`         # start build daemon
+3. `cargo run -p forge-desktop`     # launch the app
+
 ## Common commands
 
 All commands run from the `forge/` workspace root.

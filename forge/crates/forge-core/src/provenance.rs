@@ -103,17 +103,31 @@ fn spec_to_json(spec: &BuildSpec) -> serde_json::Value {
     })
 }
 
+#[async_trait::async_trait]
+pub trait ProvenanceRepo: Send + Sync {
+    async fn save(
+        &self,
+        build_id: Uuid,
+        statement: &Statement,
+        bundle_path: Option<&str>,
+    ) -> Result<()>;
+    async fn get(&self, build_id: Uuid) -> Result<Option<Statement>>;
+}
+
 #[derive(Clone)]
-pub struct ProvenanceRepo {
+pub struct SqliteProvenanceRepo {
     pub(crate) storage: Storage,
 }
 
-impl ProvenanceRepo {
+impl SqliteProvenanceRepo {
     pub fn new(storage: Storage) -> Self {
         Self { storage }
     }
+}
 
-    pub async fn save(
+#[async_trait::async_trait]
+impl ProvenanceRepo for SqliteProvenanceRepo {
+    async fn save(
         &self,
         build_id: Uuid,
         statement: &Statement,
@@ -137,7 +151,7 @@ impl ProvenanceRepo {
         Ok(())
     }
 
-    pub async fn get(&self, build_id: Uuid) -> Result<Option<Statement>> {
+    async fn get(&self, build_id: Uuid) -> Result<Option<Statement>> {
         let row = sqlx::query(r#"SELECT predicate FROM provenance WHERE build_id = ?"#)
             .bind(build_id.to_string())
             .fetch_optional(self.storage.pool())
@@ -158,6 +172,7 @@ mod tests {
     use crate::domain::{
         Architecture, BaseImage, BuildSpec, ComplianceProfile, HardeningOptions, Runtime,
     };
+    use crate::repo::BuildRepo;
     use std::collections::BTreeSet;
 
     fn record() -> BuildRecord {
@@ -189,12 +204,12 @@ mod tests {
     #[tokio::test]
     async fn save_and_get_round_trip() {
         let storage = Storage::open_memory().await.unwrap();
-        let repo = ProvenanceRepo::new(storage);
+        let repo = SqliteProvenanceRepo::new(storage);
         let r = record();
 
         // foreign key requires the builds row exist; reuse BuildRepo for that.
         let storage_for_builds = repo.storage.clone();
-        let build_repo = crate::repo::BuildRepo::new(storage_for_builds);
+        let build_repo = crate::repo::SqliteBuildRepo::new(storage_for_builds);
         build_repo.insert(&r).await.unwrap();
 
         let stmt = build_statement(&r, "img:tag", "sha256:deadbeef");

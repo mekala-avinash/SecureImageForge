@@ -1,0 +1,198 @@
+--- src/repo.rs
++++ src/repo.rs
+@@ -10,13 +10,40 @@
+ use crate::storage::Storage;
+ use crate::{Error, Result};
+ 
++#[async_trait::async_trait]
++pub trait BuildRepo: Send + Sync {
++    async fn insert(&self, record: &BuildRecord) -> Result<()>;
++    async fn insert_for_project(&self, record: &BuildRecord, project_id: &str) -> Result<()>;
++    async fn update_status(
++        &self,
++        id: Uuid,
++        status: BuildStatus,
++        started_at: Option<DateTime<Utc>>,
++        finished_at: Option<DateTime<Utc>>,
++        log_path: Option<&str>,
++    ) -> Result<()>;
++    async fn save_scan(&self, build_id: Uuid, scan: &ScanResult) -> Result<()>;
++    async fn save_sbom(&self, build_id: Uuid, sbom: &Sbom) -> Result<()>;
++    async fn save_artifact(&self, build_id: Uuid, artifact: &BuildArtifact) -> Result<()>;
++    async fn list(&self, limit: i64) -> Result<Vec<BuildSummary>>;
++    async fn list_project(&self, project_id: &str, limit: i64) -> Result<Vec<BuildSummary>>;
++    async fn get_summary(&self, build_id: Uuid) -> Result<Option<BuildSummary>>;
++    async fn get_summary_in_project(&self, project_id: &str, build_id: Uuid) -> Result<Option<BuildSummary>>;
++    async fn get_record(&self, build_id: Uuid) -> Result<Option<BuildRecord>>;
++    async fn get_record_in_project(&self, project_id: &str, build_id: Uuid) -> Result<Option<BuildRecord>>;
++    async fn list_artifacts(&self, build_id: Uuid) -> Result<Vec<BuildArtifact>>;
++    async fn drift_targets(&self, limit: i64) -> Result<Vec<(Uuid, String)>>;
++    async fn get_log_path(&self, build_id: Uuid) -> Result<Option<String>>;
++    async fn get_project_id(&self, build_id: Uuid) -> Result<Option<String>>;
++    async fn get_sbom(&self, build_id: Uuid) -> Result<Option<Sbom>>;
++    async fn get_scan(&self, build_id: Uuid) -> Result<Option<ScanResult>>;
++}
++
+ #[derive(Clone)]
+-pub struct BuildRepo {
++pub struct SqliteBuildRepo {
+     storage: Storage,
+ }
+ 
+-impl BuildRepo {
++impl SqliteBuildRepo {
+     pub fn new(storage: Storage) -> Self {
+         Self { storage }
+     }
+@@ -25,12 +52,15 @@
+     pub fn storage(&self) -> &Storage {
+         &self.storage
+     }
++}
+ 
+-    pub async fn insert(&self, record: &BuildRecord) -> Result<()> {
++#[async_trait::async_trait]
++impl BuildRepo for SqliteBuildRepo {
++    async fn insert(&self, record: &BuildRecord) -> Result<()> {
+         self.insert_for_project(record, "default-project").await
+     }
+ 
+-    pub async fn insert_for_project(&self, record: &BuildRecord, project_id: &str) -> Result<()> {
++    async fn insert_for_project(&self, record: &BuildRecord, project_id: &str) -> Result<()> {
+         let spec_json = serde_json::to_string(&record.spec)?;
+         sqlx::query(
+             r#"INSERT INTO builds (id, name, runtime, base_image, status, spec_json,
+@@ -51,7 +81,7 @@
+         Ok(())
+     }
+ 
+-    pub async fn update_status(
++    async fn update_status(
+         &self,
+         id: Uuid,
+         status: BuildStatus,
+@@ -76,7 +106,7 @@
+         Ok(())
+     }
+ 
+-    pub async fn save_scan(&self, build_id: Uuid, scan: &ScanResult) -> Result<()> {
++    async fn save_scan(&self, build_id: Uuid, scan: &ScanResult) -> Result<()> {
+         let findings = serde_json::to_string(&scan.findings)?;
+         sqlx::query(
+             r#"INSERT INTO scans (build_id, scanner, scanned_at, findings)
+@@ -95,7 +125,7 @@
+         Ok(())
+     }
+ 
+-    pub async fn save_sbom(&self, build_id: Uuid, sbom: &Sbom) -> Result<()> {
++    async fn save_sbom(&self, build_id: Uuid, sbom: &Sbom) -> Result<()> {
+         let document = serde_json::to_string(&sbom.document)?;
+         sqlx::query(
+             r#"INSERT INTO sboms (build_id, format, document)
+@@ -112,7 +142,7 @@
+         Ok(())
+     }
+ 
+-    pub async fn save_artifact(&self, build_id: Uuid, artifact: &BuildArtifact) -> Result<()> {
++    async fn save_artifact(&self, build_id: Uuid, artifact: &BuildArtifact) -> Result<()> {
+         sqlx::query(
+             r#"INSERT INTO artifacts (build_id, digest, registry_ref, bytes, architecture)
+                VALUES (?, ?, ?, ?, ?)
+@@ -130,11 +160,11 @@
+         Ok(())
+     }
+ 
+-    pub async fn list(&self, limit: i64) -> Result<Vec<BuildSummary>> {
++    async fn list(&self, limit: i64) -> Result<Vec<BuildSummary>> {
+         self.list_project("default-project", limit).await
+     }
+ 
+-    pub async fn list_project(&self, project_id: &str, limit: i64) -> Result<Vec<BuildSummary>> {
++    async fn list_project(&self, project_id: &str, limit: i64) -> Result<Vec<BuildSummary>> {
+         let rows = sqlx::query(
+             r#"SELECT id, name, runtime, base_image, status, created_at, finished_at
+                FROM builds
+@@ -159,12 +189,12 @@
+             .collect())
+     }
+ 
+-    pub async fn get_summary(&self, build_id: Uuid) -> Result<Option<BuildSummary>> {
++    async fn get_summary(&self, build_id: Uuid) -> Result<Option<BuildSummary>> {
+         self.get_summary_in_project("default-project", build_id)
+             .await
+     }
+ 
+-    pub async fn get_summary_in_project(
++    async fn get_summary_in_project(
+         &self,
+         project_id: &str,
+         build_id: Uuid,
+@@ -188,12 +218,12 @@
+         }))
+     }
+ 
+-    pub async fn get_record(&self, build_id: Uuid) -> Result<Option<BuildRecord>> {
++    async fn get_record(&self, build_id: Uuid) -> Result<Option<BuildRecord>> {
+         self.get_record_in_project("default-project", build_id)
+             .await
+     }
+ 
+-    pub async fn get_record_in_project(
++    async fn get_record_in_project(
+         &self,
+         project_id: &str,
+         build_id: Uuid,
+@@ -231,7 +261,7 @@
+         }))
+     }
+ 
+-    pub async fn list_artifacts(&self, build_id: Uuid) -> Result<Vec<BuildArtifact>> {
++    async fn list_artifacts(&self, build_id: Uuid) -> Result<Vec<BuildArtifact>> {
+         let rows = sqlx::query(
+             r#"SELECT digest, registry_ref, bytes, architecture FROM artifacts WHERE build_id = ?"#,
+         )
+@@ -251,7 +281,7 @@
+             .collect()
+     }
+ 
+-    pub async fn drift_targets(&self, limit: i64) -> Result<Vec<(Uuid, String)>> {
++    async fn drift_targets(&self, limit: i64) -> Result<Vec<(Uuid, String)>> {
+         let rows = sqlx::query(
+             r#"SELECT b.id, COALESCE(a.registry_ref, a.digest) AS image_ref
+                FROM builds b
+@@ -274,7 +304,7 @@
+             .collect()
+     }
+ 
+-    pub async fn get_log_path(&self, build_id: Uuid) -> Result<Option<String>> {
++    async fn get_log_path(&self, build_id: Uuid) -> Result<Option<String>> {
+         let row = sqlx::query(r#"SELECT log_path FROM builds WHERE id = ?"#)
+             .bind(build_id.to_string())
+             .fetch_optional(self.storage.pool())
+@@ -282,7 +312,7 @@
+         Ok(row.and_then(|r| r.get::<Option<String>, _>("log_path")))
+     }
+ 
+-    pub async fn get_project_id(&self, build_id: Uuid) -> Result<Option<String>> {
++    async fn get_project_id(&self, build_id: Uuid) -> Result<Option<String>> {
+         let row = sqlx::query(r#"SELECT project_id FROM builds WHERE id = ?"#)
+             .bind(build_id.to_string())
+             .fetch_optional(self.storage.pool())
+@@ -290,7 +320,7 @@
+         Ok(row.map(|r| r.get("project_id")))
+     }
+ 
+-    pub async fn get_sbom(&self, build_id: Uuid) -> Result<Option<Sbom>> {
++    async fn get_sbom(&self, build_id: Uuid) -> Result<Option<Sbom>> {
+         let row = sqlx::query(r#"SELECT format, document FROM sboms WHERE build_id = ?"#)
+             .bind(build_id.to_string())
+             .fetch_optional(self.storage.pool())
+@@ -306,7 +336,7 @@
+         }
+     }
+ 
+-    pub async fn get_scan(&self, build_id: Uuid) -> Result<Option<ScanResult>> {
++    async fn get_scan(&self, build_id: Uuid) -> Result<Option<ScanResult>> {
+         let row =
+             sqlx::query(r#"SELECT scanner, scanned_at, findings FROM scans WHERE build_id = ?"#)
+                 .bind(build_id.to_string())

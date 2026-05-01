@@ -24,6 +24,7 @@ pub mod orchestrator;
 #[cfg(feature = "pg")]
 pub mod pg_storage;
 pub mod process;
+pub mod runtime;
 pub mod provenance;
 pub mod rbac;
 pub mod registry;

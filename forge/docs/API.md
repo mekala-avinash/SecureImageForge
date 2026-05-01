@@ -49,10 +49,21 @@ curl -s -H "authorization: Bearer $TOKEN" http://127.0.0.1:7878/v1/builds
 | GET | `/v1/builds/{id}/log` | viewer | raw build log |
 | GET | `/v1/builds/{id}/provenance` | viewer | in-toto SLSA Statement |
 | GET | `/v1/builds/{id}/drift` | viewer | drift snapshots |
+| POST | `/v1/builds/{id}/cancel` | operator | cancel a running build |
+| GET | `/v1/projects/{project_id}/builds` | viewer | builds scoped to project |
+| POST | `/v1/projects/{project_id}/builds` | operator | create a build in project |
+| GET | `/v1/projects/{project_id}/builds/{id}/...` | viewer | (all build subresources) |
+| POST | `/v1/projects/{project_id}/builds/{id}/cancel` | operator | cancel a running build in project |
+| GET | `/v1/projects/{project_id}/jobs` | viewer | active/pending jobs in project |
 | GET | `/v1/audit` | admin | last 200 audit events |
 | GET | `/v1/principals` | admin | list principals |
 | POST | `/v1/principals` | admin | create + issue token |
 | DELETE | `/v1/principals/{id}` | admin | revoke |
+| GET | `/v1/auth/config` | (open) | auth configuration (e.g. OIDC details) |
+| GET | `/v1/rbac/bindings` | admin | list RBAC bindings |
+| POST | `/v1/rbac/bindings` | admin | create RBAC binding |
+| GET | `/v1/scopes` | admin | list scope grants |
+| POST | `/v1/scopes` | admin | create scope grant |
 
 ## RBAC
 

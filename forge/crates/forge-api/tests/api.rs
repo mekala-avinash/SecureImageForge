@@ -13,12 +13,25 @@ use forge_core::toolchain::Toolchain;
 async fn spawn() -> String {
     let storage = Storage::open_memory().await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let logs = LogStore::new(dir.path().join("logs"));
+    let logs = Arc::new(forge_core::logs::FileLogStore::new(dir.path().join("logs"))) as Arc<dyn forge_core::logs::LogStore>;
+    let toolchain = Arc::new(Toolchain::new(None));
     let state = ApiState::new(
         Arc::new(Config::default()),
-        storage,
+        Arc::new(forge_core::repo::SqliteBuildRepo::new(storage.clone())),
         logs,
-        Arc::new(Toolchain::new(None)),
+        Arc::new(forge_core::audit::SqliteAuditLog::new(storage.clone())),
+        Arc::new(forge_core::rbac::SqlitePrincipalRepo::new(storage.clone())),
+        Arc::new(forge_core::provenance::SqliteProvenanceRepo::new(storage.clone())),
+        Arc::new(forge_core::team::SqliteTeamRepo::new(storage.clone())),
+        Arc::new(forge_core::team::SqliteScopeRepo::new(storage.clone())),
+        Arc::new(forge_core::team::SqliteBuildQueueRepo::new(storage.clone())),
+        Arc::new(forge_core::drift::SqliteDriftDetector {
+            repo: Arc::new(forge_core::repo::SqliteBuildRepo::new(storage.clone())),
+            storage: storage.clone(),
+            scanner: forge_api::make_scanner(&toolchain),
+            audit: Arc::new(forge_core::audit::SqliteAuditLog::new(storage.clone())),
+        }),
+        toolchain,
     );
     let app = router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
