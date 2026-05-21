@@ -1,0 +1,119 @@
+# prometheus-values.yaml — kube-prometheus-stack hardened defaults
+# Place under gitops/platform/observability/prometheus/values.yaml
+
+prometheus:
+  prometheusSpec:
+    replicas: 2
+    retention: 30d
+    retentionSize: 80GiB
+    resources:
+      requests: { cpu: 1, memory: 4Gi }
+      limits:   { cpu: 4, memory: 16Gi }
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          resources: { requests: { storage: 100Gi } }
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      fsGroup: 65534
+      seccompProfile: { type: RuntimeDefault }
+    podMetadata:
+      labels: { app.kubernetes.io/component: prometheus }
+    serviceMonitorSelector:    {}   # discover all SMs in cluster
+    podMonitorSelector:        {}
+    probeSelector:             {}
+    ruleSelector:              {}
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    enableRemoteWriteReceiver: false
+    remoteWrite:
+      - url: http://mimir-distributor.observability:9009/api/v1/push   # long-term
+        writeRelabelConfigs:
+          - sourceLabels: [__name__]
+            regex: (up|kube_.+|node_.+|container_.+|http_.+|grpc_.+|.+:slo.*)
+            action: keep
+    externalLabels:
+      cluster: "{{ .Values.global.clusterName }}"
+      region:  "{{ .Values.global.region }}"
+      env:     "{{ .Values.global.env }}"
+
+alertmanager:
+  alertmanagerSpec:
+    replicas: 3
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits:   { cpu: 500m, memory: 512Mi }
+    securityContext: { runAsNonRoot: true, runAsUser: 65534, fsGroup: 65534, seccompProfile: { type: RuntimeDefault } }
+  config:
+    global: { resolve_timeout: 5m }
+    route:
+      receiver: pagerduty-default
+      group_by: [alertname, team, severity]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      routes:
+        - matchers: ["severity=page"]
+          receiver: pagerduty-page
+          continue: true
+        - matchers: ["severity=ticket"]
+          receiver: jira-ticket
+    receivers:
+      - name: pagerduty-page
+        pagerduty_configs:
+          - routing_key_file: /etc/alertmanager/secrets/pd-routing-key
+            severity: '{{ if eq .CommonLabels.severity "page" }}critical{{ else }}warning{{ end }}'
+      - name: pagerduty-default
+        pagerduty_configs:
+          - routing_key_file: /etc/alertmanager/secrets/pd-routing-key-default
+      - name: jira-ticket
+        webhook_configs:
+          - url: http://jira-webhook.platform-integrations:8080/alert
+
+prometheusOperator:
+  resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: 500m, memory: 512Mi } }
+  admissionWebhooks: { patch: { enabled: true } }
+  tls:
+    enabled: true
+  securityContext: { runAsNonRoot: true, runAsUser: 65534, fsGroup: 65534, seccompProfile: { type: RuntimeDefault } }
+
+nodeExporter:
+  enabled: true
+  hostRootFsMount: { enabled: false }    # avoid hostPath; node_exporter runs in pod ns
+
+kubeStateMetrics:
+  enabled: true
+
+grafana:
+  enabled: false   # deployed via grafana-operator separately for GitOps-friendly dashboard mgmt
+
+defaultRules:
+  create: true
+  rules:
+    alertmanager: true
+    etcd: true
+    configReloaders: true
+    general: true
+    k8s: true
+    kubeApiserverAvailability: true
+    kubeApiserverBurnrate: true
+    kubeApiserverHistogram: true
+    kubeApiserverSlos: true
+    kubeControllerManager: true
+    kubelet: true
+    kubeProxy: true
+    kubePrometheusGeneral: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    network: true
+    node: true
+    nodeExporterAlerting: true
+    nodeExporterRecording: true
+    prometheus: true
+    prometheusOperator: true

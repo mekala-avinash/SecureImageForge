@@ -1,0 +1,46 @@
+# tempo-values.yaml — Grafana Tempo with S3 backend + tail-sampling-friendly receivers
+# Place under gitops/platform/observability/tempo/values.yaml
+
+tempo:
+  retention: 168h                       # 7 days hot; sampled subset preserved 30 days via compactor
+  multitenancyEnabled: true             # X-Scope-OrgID per tenant
+  storage:
+    trace:
+      backend: s3
+      s3:
+        bucket: acme-tempo-traces
+        endpoint: s3.amazonaws.com
+        region: us-east-1
+      pool: { max_workers: 100, queue_depth: 10000 }
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits:   { cpu: 2,    memory: 4Gi }
+
+distributor:
+  replicas: 3
+  receivers:
+    otlp:
+      protocols:
+        grpc: { endpoint: 0.0.0.0:4317 }
+        http: { endpoint: 0.0.0.0:4318 }
+  resources: { requests: { cpu: 500m, memory: 1Gi }, limits: { cpu: 2, memory: 4Gi } }
+
+ingester:
+  replicas: 3
+  persistence: { enabled: true, size: 50Gi, storageClass: gp3 }
+  resources: { requests: { cpu: 1, memory: 2Gi }, limits: { cpu: 4, memory: 8Gi } }
+
+querier:    { replicas: 2 }
+queryFrontend: { replicas: 2 }
+compactor:  { replicas: 1, persistence: { enabled: true, size: 20Gi, storageClass: gp3 } }
+
+metricsGenerator:
+  enabled: true                         # automatically derive RED metrics from spans
+  remoteWriteUrl: http://prometheus-server.observability:9090/api/v1/write
+
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/tempo-s3-irsa
+
+podSecurityContext: { runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: { type: RuntimeDefault } }

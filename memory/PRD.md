@@ -78,4 +78,9 @@ Complete — documentation deliverable. No application code was modified.
 - **Day 3 ✅ COMPLETED (worked example)**: SteerCo #1 minutes archived at `docs/leadership-review/day-0-5/03-steering-committee/minutes/2026-01-09-kickoff.md`.
 - **Day 5 ✅ READY**: `gitops`, `platform-repo`, `tenants-repo` git-init'd with initial signed-commit-ready bootstrap commits. Execute `/app/gitops-bootstrap/push-all.sh` with `gh` + `terraform` credentials to push and apply branch protection. Vendor cover emails ready at `05-compliance-platform-rfp/vendor-cover-emails.md` and `06-managed-istio-rfp/vendor-cover-emails.md`.
 - **Week 4 ✅ COMPLETED (worked example)**: Phase-0 gate review minutes at `docs/leadership-review/gate-reviews/phase-0-2026-02-06.md`. Decision: **GO with 2 conditions** (Backstage Node.js scaffolder parity by 2026-02-20; Tetrate commercial terms by 2026-02-13). Retrospective at `docs/leadership-review/gate-reviews/phase-0-retrospective.md`.
-- Begin Phase 1 immediately on gate-review GO.
+- **Phase 1 ✅ KICKED OFF**: Full 12-week plan and concrete artifacts published at `docs/phase-1/`. Four workstreams initiated:
+  1. Hardened runtimes adoption — playbook, per-service runbook, waiver process
+  2. Observability rollout — rollout plan, Helm values for Prometheus / Loki / Tempo
+  3. Single-region prod cluster — EKS Terraform module, Karpenter NodePools, Cilium values
+  4. SOC 2 Type II audit-window prep — full control test plan, evidence collection schedule
+- **Operator execution checklist** at `docs/leadership-review/day-0-5/OPERATOR_EXECUTION_CHECKLIST.md` for the 3 remaining human-only actions (redline minutes, send vendor emails, run push-all.sh).

@@ -1,0 +1,92 @@
+# Karpenter NodePool + EC2NodeClass for prod-use1
+# Apply via Argo CD under gitops/platform/karpenter/
+
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata: { name: default }
+spec:
+  amiSelectorTerms:
+    - alias: bottlerocket@latest          # auto-tracks latest Bottlerocket AMI
+  subnetSelectorTerms:
+    - tags: { karpenter.sh/discovery: prod-use1 }
+  securityGroupSelectorTerms:
+    - tags: { karpenter.sh/discovery: prod-use1 }
+  role: prod-use1-karpenter-node          # created by Terraform module
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs: { volumeType: gp3, volumeSize: 100Gi, encrypted: true, deleteOnTermination: true }
+  metadataOptions:
+    httpEndpoint: enabled
+    httpTokens: required
+    httpPutResponseHopLimit: 1
+    httpProtocolIPv6: disabled
+  detailedMonitoring: true
+  tags:
+    Program: EPT
+    Env: prod
+    karpenter.sh/discovery: prod-use1
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata: { name: general }
+spec:
+  template:
+    metadata: { labels: { workload: general } }
+    spec:
+      nodeClassRef: { group: karpenter.k8s.aws, kind: EC2NodeClass, name: default }
+      taints: []
+      startupTaints: []
+      requirements:
+        - { key: kubernetes.io/arch,          operator: In, values: [amd64, arm64] }
+        - { key: kubernetes.io/os,            operator: In, values: [linux] }
+        - { key: karpenter.sh/capacity-type,  operator: In, values: [spot, on-demand] }
+        - { key: node.kubernetes.io/instance-type, operator: NotIn, values: [t3.micro, t3.small] }
+        - { key: karpenter.k8s.aws/instance-family, operator: In, values: [m6i, m7i, c6i, c7i] }
+        - { key: karpenter.k8s.aws/instance-cpu, operator: Gt, values: ["1"] }
+        - { key: karpenter.k8s.aws/instance-memory, operator: Gt, values: ["2048"] }
+      expireAfter: 168h     # 7d max node age (forces rotation)
+      terminationGracePeriod: 60s
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 1m
+    budgets:
+      - { nodes: 10%, schedule: "0 9-17 * * mon-fri", duration: 1h }   # cautious during business hours
+      - { nodes: 100%, schedule: "0 22 * * *",        duration: 6h }   # aggressive overnight
+  limits: { cpu: "2000", memory: 4000Gi }
+  weight: 100
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata: { name: memory-opt }
+spec:
+  template:
+    metadata: { labels: { workload: memory-opt } }
+    spec:
+      nodeClassRef: { group: karpenter.k8s.aws, kind: EC2NodeClass, name: default }
+      requirements:
+        - { key: karpenter.k8s.aws/instance-family, operator: In, values: [r6i, r7i] }
+        - { key: karpenter.sh/capacity-type, operator: In, values: [on-demand] }
+      taints:
+        - { key: workload, value: memory-opt, effect: NoSchedule }
+  limits: { cpu: "500", memory: 4000Gi }
+  weight: 50
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata: { name: spot-batch }
+spec:
+  template:
+    metadata: { labels: { workload: batch } }
+    spec:
+      nodeClassRef: { group: karpenter.k8s.aws, kind: EC2NodeClass, name: default }
+      requirements:
+        - { key: karpenter.sh/capacity-type, operator: In, values: [spot] }
+        - { key: karpenter.k8s.aws/instance-family, operator: In, values: [m6i, m7i, c6i, c7i, r6i, r7i] }
+      taints:
+        - { key: workload, value: batch, effect: NoSchedule }
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 30s
+  limits: { cpu: "1000", memory: 2000Gi }
+  weight: 10

@@ -1,0 +1,75 @@
+# Cilium Helm values for prod-use1
+# Place under gitops/platform/cilium/values.yaml
+# Applied at wave -80 in App-of-Apps so it's up before workloads.
+
+kubeProxyReplacement: true
+k8sServiceHost: <EKS API endpoint>      # set by Argo CD ApplicationSet config
+k8sServicePort: 443
+
+cluster:
+  name: prod-use1
+  id: 1                                  # unique per cluster for ClusterMesh later
+
+ipam:
+  mode: eni                              # AWS ENI mode for EKS
+eni:
+  enabled: true
+  awsReleaseExcessIPs: true
+  iamRole: arn:aws:iam::ACCOUNT:role/prod-use1-cilium-eni
+
+enableIPv4Masquerade: true
+enableIPv6: false
+routingMode: native
+ipv4NativeRoutingCIDR: 10.20.0.0/16
+endpointRoutes: { enabled: true }
+
+hubble:
+  enabled: true
+  relay: { enabled: true, replicas: 2 }
+  ui:    { enabled: true, ingress: { enabled: false } }
+  metrics:
+    enabled:
+      - dns
+      - drop
+      - tcp
+      - flow
+      - port-distribution
+      - icmp
+      - httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction
+    serviceMonitor: { enabled: true }
+
+operator:
+  replicas: 2
+  resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 1, memory: 1Gi } }
+  prometheus: { enabled: true, serviceMonitor: { enabled: true } }
+
+prometheus:
+  enabled: true
+  serviceMonitor: { enabled: true }
+
+bpf:
+  masquerade: true
+  hostLegacyRouting: false
+
+l7Proxy: true
+loadBalancer:
+  algorithm: maglev
+  mode: dsr
+
+tetragon:                                # eBPF-based runtime security
+  enabled: true
+  export:
+    stdout: { enabled: false }
+    fileExporter: { enabled: true, fileName: /var/run/cilium/tetragon/tetragon.log }
+  tracingPolicy: { enabled: true }
+
+securityContext:
+  capabilities:
+    ciliumAgent:    [CHOWN, KILL, NET_ADMIN, NET_RAW, IPC_LOCK, SYS_ADMIN, SYS_RESOURCE, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    cleanCiliumState: [NET_ADMIN, SYS_ADMIN]
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: 4,    memory: 4Gi }
+
+priorityClassName: system-node-critical
