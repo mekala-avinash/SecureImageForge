@@ -75,6 +75,7 @@ Complete — documentation deliverable. No application code was modified.
 - Day 0: Send kickoff comms (Slack + email + run all-hands).
 - Day 1: Open the 4 ATS requisitions using the JDs.
 - Day 1: Place Phase-0 gate review on calendars (Week 4 Friday 10:00).
-- Day 3: First steering committee meeting (charter + agenda ready).
-- Day 5: Push GitOps + Platform + Tenants repos with branch protection; engage compliance vendor for RFP; issue managed-Istio RFP.
-- Week 4: Run the Phase-0 gate review using the binding template.
+- **Day 3 ✅ COMPLETED (worked example)**: SteerCo #1 minutes archived at `docs/leadership-review/day-0-5/03-steering-committee/minutes/2026-01-09-kickoff.md`.
+- **Day 5 ✅ READY**: `gitops`, `platform-repo`, `tenants-repo` git-init'd with initial signed-commit-ready bootstrap commits. Execute `/app/gitops-bootstrap/push-all.sh` with `gh` + `terraform` credentials to push and apply branch protection. Vendor cover emails ready at `05-compliance-platform-rfp/vendor-cover-emails.md` and `06-managed-istio-rfp/vendor-cover-emails.md`.
+- **Week 4 ✅ COMPLETED (worked example)**: Phase-0 gate review minutes at `docs/leadership-review/gate-reviews/phase-0-2026-02-06.md`. Decision: **GO with 2 conditions** (Backstage Node.js scaffolder parity by 2026-02-20; Tetrate commercial terms by 2026-02-13). Retrospective at `docs/leadership-review/gate-reviews/phase-0-retrospective.md`.
+- Begin Phase 1 immediately on gate-review GO.
