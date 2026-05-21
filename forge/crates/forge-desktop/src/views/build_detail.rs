@@ -76,26 +76,31 @@ pub fn BuildDetail(build_id: Uuid) -> Element {
                 div {
                     class: "glass-card",
                     div {
-                        style: "display: grid; grid-template-columns: repeat(5, 1fr); gap: 24px;",
+                        class: "meta-grid",
                         div {
-                            div { style: "color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px;", "Alias" }
-                            div { style: "font-weight: 600;", "{s.name}" }
+                            class: "meta-item",
+                            div { class: "meta-label", "Alias" }
+                            div { class: "meta-value", "{s.name}" }
                         }
                         div {
-                            div { style: "color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px;", "Runtime" }
-                            div { "{s.runtime}" }
+                            class: "meta-item",
+                            div { class: "meta-label", "Runtime" }
+                            div { class: "meta-value", "{s.runtime}" }
                         }
                         div {
-                            div { style: "color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px;", "Base Image" }
-                            div { class: "mono", style: "font-size: 12px;", "{s.base_image}" }
+                            class: "meta-item",
+                            div { class: "meta-label", "Base Image" }
+                            div { class: "meta-value mono", style: "font-size: 12px;", "{s.base_image}" }
                         }
                         div {
-                            div { style: "color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px;", "Operational" }
-                            div { StatusBadge { status: s.status.clone() } }
+                            class: "meta-item",
+                            div { class: "meta-label", "Operational" }
+                            div { class: "meta-value", StatusBadge { status: s.status.clone() } }
                         }
                         div {
-                            div { style: "color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px;", "Lifecycle" }
-                            div { style: "font-size: 11px; opacity: 0.7;",
+                            class: "meta-item",
+                            div { class: "meta-label", "Lifecycle" }
+                            div { class: "meta-value", style: "font-size: 11px; opacity: 0.7;",
                                 div { "Inception: {s.created_at}" }
                                 if let Some(f) = s.finished_at.as_ref() {
                                     div { "Archived: {f}" }
@@ -116,13 +121,13 @@ pub fn BuildDetail(build_id: Uuid) -> Element {
                         p { class: "muted", "Zero vulnerabilities detected in current matrix." }
                     } else {
                         table {
-                            style: "width: 100%; border-collapse: collapse;",
+                            class: "data-table",
                             thead { tr {
-                                th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Severity" }
-                                th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "CVE ID" }
-                                th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Target Component" }
-                                th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Current" }
-                                th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Remediation" }
+                                th { "Severity" }
+                                th { "CVE ID" }
+                                th { "Target Component" }
+                                th { "Current" }
+                                th { "Remediation" }
                             }}
                             tbody {
                                 {scan.findings.iter().map(|f| {
@@ -130,12 +135,11 @@ pub fn BuildDetail(build_id: Uuid) -> Element {
                                     let fix = f.fixed_version.clone().unwrap_or_else(|| "—".into());
                                     rsx! {
                                         tr {
-                                            style: "border-top: 1px solid var(--rule);",
-                                            td { style: "padding: 16px 12px;", span { class: "badge-sev-{sev.to_lowercase()}", "{sev}" } }
-                                            td { style: "padding: 16px 12px;", span { class: "mono", style: "color: var(--accent);", "{f.id}" } }
-                                            td { style: "padding: 16px 12px;", "{f.package}" }
-                                            td { style: "padding: 16px 12px; opacity: 0.7; font-size: 12px;", span { class: "mono", "{f.installed_version}" } }
-                                            td { style: "padding: 16px 12px; font-weight: 600;", span { class: "mono", "{fix}" } }
+                                            td { span { class: "badge-sev-{sev.to_lowercase()}", "{sev}" } }
+                                            td { span { class: "mono", style: "color: var(--accent);", "{f.id}" } }
+                                            td { "{f.package}" }
+                                            td { class: "mono", style: "font-size: 12px; opacity: 0.7;", "{f.installed_version}" }
+                                            td { class: "mono", style: "font-weight: 600;", "{fix}" }
                                         }
                                     }
                                 })}
@@ -156,12 +160,14 @@ pub fn BuildDetail(build_id: Uuid) -> Element {
                         div {
                             style: "display: flex; flex-direction: column; gap: 16px;",
                             div {
-                                div { style: "color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;", "Specification" }
-                                div { class: "mono", style: "color: var(--accent);", "{b.format}" }
+                                class: "meta-item",
+                                div { class: "meta-label", "Specification" }
+                                div { class: "meta-value mono", style: "color: var(--accent);", "{b.format}" }
                             }
                             div {
-                                div { style: "color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;", "Component Density" }
-                                div { style: "font-size: 32px; font-weight: 800;", {component_count(&b.document).to_string()} }
+                                class: "meta-item",
+                                div { class: "meta-label", "Component Density" }
+                                div { class: "meta-value", style: "font-size: 32px; font-weight: 800;", {component_count(&b.document).to_string()} }
                             }
                         }
                     } else {
@@ -174,8 +180,8 @@ pub fn BuildDetail(build_id: Uuid) -> Element {
                     h2 { style: "margin-bottom: 20px;", "System Logs" }
                     if let Some(content) = log.as_ref() {
                         pre { 
-                            class: "mono",
-                            style: "background: rgba(0,0,0,0.3); padding: 16px; border-radius: 8px; font-size: 12px; color: var(--ok); max-height: 300px; overflow-y: auto; border: 1px solid var(--rule);",
+                            class: "log",
+                            style: "max-height: 300px;",
                             "{content}" 
                         }
                     } else {

@@ -35,8 +35,7 @@ pub fn BuildsList(route: Signal<Route>) -> Element {
                 class: "view-header",
                 h1 { "Build History" }
                 button {
-                    class: "nav-item active",
-                    style: "border: 0; padding: 10px 20px; border-radius: 8px;",
+                    class: "btn-primary",
                     onclick: move |_| route.set(Route::NewBuild),
                     "+ Initialize New Forge"
                 }
@@ -47,15 +46,15 @@ pub fn BuildsList(route: Signal<Route>) -> Element {
                     p { class: "muted", "No build logs found in the archives." }
                 } else {
                     table {
-                        style: "width: 100%; border-collapse: collapse;",
+                        class: "data-table",
                         thead { tr {
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Protocol ID" }
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Alias" }
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Env" }
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Base Matrix" }
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Integrity" }
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Timestamp" }
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Control" }
+                            th { "Protocol ID" }
+                            th { "Alias" }
+                            th { "Env" }
+                            th { "Base Matrix" }
+                            th { "Integrity" }
+                            th { "Timestamp" }
+                            th { "Control" }
                         }}
                         tbody {
                             {rows.iter().map(|r| {
@@ -65,18 +64,17 @@ pub fn BuildsList(route: Signal<Route>) -> Element {
                                 rsx! {
                                     tr { 
                                         key: "{id_full}",
-                                        style: "border-top: 1px solid var(--rule);",
-                                        td { style: "padding: 16px 12px;", span { class: "mono", style: "color: var(--accent);", "{id_short}" } }
-                                        td { style: "padding: 16px 12px; font-weight: 600;", "{r.name}" }
-                                        td { style: "padding: 16px 12px;", "{r.runtime}" }
-                                        td { style: "padding: 16px 12px; opacity: 0.7; font-size: 12px;", "{r.base_image}" }
-                                        td { style: "padding: 16px 12px;", StatusBadge { status: r.status.clone() } }
-                                        td { style: "padding: 16px 12px; color: var(--muted);", "{r.created_at}" }
-                                        td { style: "padding: 16px 12px;",
+                                        td { span { class: "mono", style: "color: var(--accent);", "{id_short}" } }
+                                        td { style: "font-weight: 600;", "{r.name}" }
+                                        td { "{r.runtime}" }
+                                        td { class: "mono", style: "font-size: 12px; opacity: 0.7;", "{r.base_image}" }
+                                        td { StatusBadge { status: r.status.clone() } }
+                                        td { style: "color: var(--muted);", "{r.created_at}" }
+                                        td {
                                             if let Some(uuid) = parsed {
                                                 button {
-                                                    class: "nav-item",
-                                                    style: "padding: 6px 12px; font-size: 12px;",
+                                                    class: "btn-ghost",
+                                                    style: "padding: 6px 12px; font-size: 11px;",
                                                     onclick: move |_| route.set(Route::Build(uuid)),
                                                     "Inspect"
                                                 }

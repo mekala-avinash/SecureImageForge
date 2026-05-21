@@ -51,12 +51,11 @@ pub fn Dashboard() -> Element {
                 } else {
                     table {
                         class: "data-table",
-                        style: "width: 100%; border-collapse: collapse;",
                         thead { tr {
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "System ID" }
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Runtime Environment" }
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Integrity Status" }
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Timestamp" }
+                            th { "System ID" }
+                            th { "Runtime Environment" }
+                            th { "Integrity Status" }
+                            th { "Timestamp" }
                         }}
                         tbody {
                             {rows.iter().take(10).map(|r| {
@@ -64,15 +63,14 @@ pub fn Dashboard() -> Element {
                                 rsx! {
                                     tr { 
                                         key: "{r.id}",
-                                        style: "border-top: 1px solid var(--rule);",
-                                        td { style: "padding: 16px 12px;", 
+                                        td { 
                                             span { class: "mono", style: "color: var(--accent);", "{id_short}" }
                                             " "
                                             span { style: "font-weight: 600; margin-left: 8px;", "{r.name}" }
                                         }
-                                        td { style: "padding: 16px 12px;", "{r.runtime}" }
-                                        td { style: "padding: 16px 12px;", StatusBadge { status: r.status.clone() } }
-                                        td { style: "padding: 16px 12px; color: var(--muted);", "{r.created_at}" }
+                                        td { "{r.runtime}" }
+                                        td { StatusBadge { status: r.status.clone() } }
+                                        td { class: "muted", "{r.created_at}" }
                                     }
                                 }
                             })}

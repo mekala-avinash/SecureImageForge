@@ -36,13 +36,17 @@ enum Task {
         /// Skip checksum verification (NOT recommended).
         #[arg(long, default_value_t = false)]
         no_verify: bool,
-        /// Tools to fetch (default: all).
         #[arg(long, default_values_t = vec![
             "buildkit".to_string(),
             "trivy".to_string(),
+            "grype".to_string(),
             "syft".to_string(),
             "cosign".to_string(),
             "opa".to_string(),
+            "lima".to_string(),
+            "rootlesskit".to_string(),
+            "containerd".to_string(),
+            "runc".to_string(),
         ])]
         tools: Vec<String>,
     },
@@ -74,6 +78,9 @@ enum Task {
         /// Channel ("stable" | "beta") stamped into the manifest.
         #[arg(long, default_value = "stable")]
         channel: String,
+        /// Target triple to build for. If not specified, builds for the host's default target.
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Build release bundles for macOS and run notarization.
     DistMac {
@@ -85,6 +92,9 @@ enum Task {
         version: Option<String>,
         #[arg(long, default_value = "stable")]
         channel: String,
+        /// Target triple to build for. If not specified, builds for the host's default target.
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Build release bundles for Linux and create DEB/RPM packages.
     DistLinux {
@@ -96,6 +106,9 @@ enum Task {
         version: Option<String>,
         #[arg(long, default_value = "stable")]
         channel: String,
+        /// Target triple to build for. If not specified, builds for the host's default target.
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Build a macOS DMG installer.
     DmgMac {
@@ -122,14 +135,16 @@ fn main() -> Result<()> {
             cosign_key,
             version,
             channel,
-        } => dist(&out, cosign_key.as_deref(), version.as_deref(), &channel),
+            target,
+        } => dist(&out, cosign_key.as_deref(), version.as_deref(), &channel, target.as_deref()),
         Task::DistMac {
             out,
             cosign_key,
             version,
             channel,
+            target,
         } => {
-            dist(&out, cosign_key.as_deref(), version.as_deref(), &channel)?;
+            dist(&out, cosign_key.as_deref(), version.as_deref(), &channel, target.as_deref())?;
             let script = workspace_root()?.join("scripts").join("notarize.sh");
             if script.exists() {
                 let status = Command::new(&script).arg(&out).status()?;
@@ -146,8 +161,9 @@ fn main() -> Result<()> {
             cosign_key,
             version,
             channel,
+            target,
         } => {
-            dist(&out, cosign_key.as_deref(), version.as_deref(), &channel)?;
+            dist(&out, cosign_key.as_deref(), version.as_deref(), &channel, target.as_deref())?;
             let script = workspace_root()?.join("scripts").join("build-deb.sh");
             if script.exists() {
                 let status = Command::new(&script).arg(&out).status()?;
@@ -293,30 +309,72 @@ struct ReleaseEntry {
     size_bytes: u64,
 }
 
-fn dist(out: &Path, cosign_key: Option<&str>, version: Option<&str>, channel: &str) -> Result<()> {
+fn platform_from_target(target: &str) -> Result<String> {
+    let parts: Vec<&str> = target.split('-').collect();
+    if parts.len() < 3 {
+        bail!("invalid target triple: {}", target);
+    }
+    let arch = match parts[0] {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+    let os = if target.contains("apple-darwin") {
+        "darwin"
+    } else if target.contains("linux") {
+        "linux"
+    } else if target.contains("windows") {
+        "windows"
+    } else {
+        bail!("unsupported target OS in triple: {}", target);
+    };
+    Ok(format!("{os}/{arch}"))
+}
+
+fn dist(
+    out: &Path,
+    cosign_key: Option<&str>,
+    version: Option<&str>,
+    channel: &str,
+    target: Option<&str>,
+) -> Result<()> {
     std::fs::create_dir_all(out).with_context(|| format!("creating dist dir {}", out.display()))?;
 
-    // Build the release binaries for the *current* host.
-    let host_platform = host_platform();
-    println!("[xtask] building release binaries for {host_platform}");
-    run_cargo(&[
+    let target_platform = match target {
+        Some(t) => platform_from_target(t)?,
+        None => host_platform(),
+    };
+    println!("[xtask] building release binaries for target platform {target_platform}");
+
+    let mut build_args = vec![
         "build",
         "--release",
         "-p",
         "forge-cli",
         "-p",
         "forge-desktop",
-    ])?;
+    ];
+    if let Some(t) = target {
+        build_args.push("--target");
+        build_args.push(t);
+    }
+    run_cargo(&build_args)?;
 
-    let target_dir = workspace_root()?.join("target/release");
-    let cli_bin = target_dir.join(if cfg!(windows) { "forge.exe" } else { "forge" });
-    let desktop_bin = target_dir.join(if cfg!(windows) {
+    let target_dir = if let Some(t) = target {
+        workspace_root()?.join("target").join(t).join("release")
+    } else {
+        workspace_root()?.join("target/release")
+    };
+
+    let is_windows = target_platform.starts_with("windows");
+    let cli_bin = target_dir.join(if is_windows { "forge.exe" } else { "forge" });
+    let desktop_bin = target_dir.join(if is_windows {
         "forge-desktop.exe"
     } else {
         "forge-desktop"
     });
 
-    let safe_platform = host_platform.replace('/', "-");
+    let safe_platform = target_platform.replace('/', "-");
     let staging_name = format!("forge-{safe_platform}");
     let staging_dir = out.join(&staging_name);
     std::fs::create_dir_all(&staging_dir)?;
@@ -334,34 +392,52 @@ fn dist(out: &Path, cosign_key: Option<&str>, version: Option<&str>, channel: &s
     // Bundle dependencies
     println!("\n[xtask] bundling third-party tools...");
     let tmp_vendor_dir = out.join("tmp_vendor");
-    let mut tools = vec!["buildkit", "trivy", "grype", "syft", "cosign", "opa"].into_iter().map(String::from).collect::<Vec<_>>();
-    if host_platform.starts_with("darwin") {
+    
+    let mut tools = vec![
+        "buildkit".to_string(),
+        "trivy".to_string(),
+        "grype".to_string(),
+        "syft".to_string(),
+        "cosign".to_string(),
+        "opa".to_string(),
+    ];
+    
+    let platforms = if target_platform.starts_with("darwin") {
         tools.push("lima".into());
-    } else if host_platform.starts_with("linux") {
-        tools.push("rootlesskit".into());
-    }
+        tools.push("containerd".into());
+        tools.push("runc".into());
+        // macOS hosts require macOS host binaries + Linux guest VM binaries
+        vec![
+            target_platform.clone(),
+            "linux/amd64".to_string(),
+            "linux/arm64".to_string(),
+        ]
+    } else {
+        if target_platform.starts_with("linux") {
+            tools.push("rootlesskit".into());
+            tools.push("containerd".into());
+            tools.push("runc".into());
+        }
+        vec![target_platform.clone()]
+    };
 
     bundle_buildkit(
-        &[host_platform.clone()],
+        &platforms,
         &tmp_vendor_dir,
         false,
         &tools
     )?;
 
-    // Move vendor tools into staging_dir/vendor
+    // Move structured vendor tools into staging_dir/vendor
     let staging_vendor = staging_dir.join("vendor");
     std::fs::create_dir_all(&staging_vendor)?;
-    let platform_vendor = tmp_vendor_dir.join(&host_platform);
-    if platform_vendor.exists() {
-        for entry in std::fs::read_dir(platform_vendor)? {
-            let entry = entry?;
-            std::fs::copy(entry.path(), staging_vendor.join(entry.file_name()))?;
-        }
+    if tmp_vendor_dir.exists() {
+        copy_dir_all(&tmp_vendor_dir, &staging_vendor)?;
     }
     let _ = std::fs::remove_dir_all(&tmp_vendor_dir);
 
     // Create archive
-    let archive_ext = if cfg!(windows) { ".zip" } else { ".tar.gz" };
+    let archive_ext = if is_windows { ".zip" } else { ".tar.gz" };
     let archive_name = format!("{staging_name}{archive_ext}");
     let archive_path = out.join(&archive_name);
 
@@ -371,11 +447,31 @@ fn dist(out: &Path, cosign_key: Option<&str>, version: Option<&str>, channel: &s
             .status()?;
         if !status.success() { bail!("failed to create zip archive"); }
     } else {
-        let status = Command::new("tar")
-            .current_dir(out)
-            .args(["-czf", archive_path.file_name().unwrap().to_str().unwrap(), &staging_name])
-            .status()?;
-        if !status.success() { bail!("failed to create tar archive"); }
+        if archive_ext == ".zip" {
+            let status = Command::new("zip")
+                .current_dir(out)
+                .args(["-r", archive_path.file_name().unwrap().to_str().unwrap(), &staging_name])
+                .status();
+            match status {
+                Ok(s) if s.success() => {},
+                _ => {
+                    let fallback_name = format!("{staging_name}.tar.gz");
+                    let fallback_path = out.join(&fallback_name);
+                    let status = Command::new("tar")
+                        .current_dir(out)
+                        .args(["-czf", fallback_path.file_name().unwrap().to_str().unwrap(), &staging_name])
+                        .status()?;
+                    if !status.success() { bail!("failed to create fallback tar archive"); }
+                    println!("[xtask] WARN: zip CLI failed, fell back to tar.gz");
+                }
+            }
+        } else {
+            let status = Command::new("tar")
+                .current_dir(out)
+                .args(["-czf", archive_path.file_name().unwrap().to_str().unwrap(), &staging_name])
+                .status()?;
+            if !status.success() { bail!("failed to create tar archive"); }
+        }
     }
 
     let bytes = std::fs::read(&archive_path)?;
@@ -397,7 +493,7 @@ fn dist(out: &Path, cosign_key: Option<&str>, version: Option<&str>, channel: &s
         published_at: now_rfc3339(),
         channel: channel.to_string(),
         releases: vec![ReleaseEntry {
-            platform: host_platform.clone(),
+            platform: target_platform.clone(),
             url: archive_name.clone(),
             sha256: sha,
             signature_url,
@@ -542,10 +638,20 @@ fn bundle_macos_dmg(out: &Path) -> Result<()> {
     std::fs::copy(target_dir.join("forge"), macos_dir.join("forge"))?;
     
     // Copy vendor tools (important for portability!)
-    let vendor_dir = workspace.join("vendor");
-    if vendor_dir.exists() {
-        let dest_vendor = macos_dir.join("vendor");
-        copy_dir_all(&vendor_dir, &dest_vendor)?;
+    let safe_platform = host_platform.replace('/', "-");
+    let staged_vendor = out.join(format!("forge-{safe_platform}")).join("vendor");
+    let dest_vendor = macos_dir.join("vendor");
+    if staged_vendor.exists() {
+        println!("[xtask] copying pre-staged vendor dependencies from {}", staged_vendor.display());
+        copy_dir_all(&staged_vendor, &dest_vendor)?;
+    } else {
+        let vendor_dir = workspace.join("vendor");
+        if vendor_dir.exists() {
+            println!("[xtask] copying local workspace vendor dependencies from {}", vendor_dir.display());
+            copy_dir_all(&vendor_dir, &dest_vendor)?;
+        } else {
+            println!("[xtask] WARN: no vendor folder found staged or in workspace!");
+        }
     }
     
     // Copy Info.plist
@@ -646,6 +752,8 @@ const TOOL_VERSIONS: &[(&str, &str)] = &[
     ("opa", "v0.68.0"),
     ("lima", "v0.22.0"),
     ("rootlesskit", "v2.0.2"),
+    ("containerd", "v1.7.22"),
+    ("runc", "v1.2.2"),
 ];
 
 fn version_of(tool: &str) -> Result<&'static str> {
@@ -816,6 +924,37 @@ fn url_for(t: &ToolFetch) -> Result<(String, String)> {
                 archive,
             )
         }
+        "containerd" => {
+            if t.os != "linux" {
+                bail!("containerd is only supported on linux");
+            }
+            let archive = format!(
+                "containerd-{v}-{os}-{a}.tar.gz",
+                v = t.version.trim_start_matches('v'),
+                os = os_release,
+                a = t.arch
+            );
+            (
+                format!(
+                    "https://github.com/containerd/containerd/releases/download/{}/{}",
+                    t.version, archive
+                ),
+                archive,
+            )
+        }
+        "runc" => {
+            if t.os != "linux" {
+                bail!("runc is only supported on linux");
+            }
+            let exe = format!("runc.{}", t.arch);
+            (
+                format!(
+                    "https://github.com/opencontainers/runc/releases/download/{}/{}",
+                    t.version, exe
+                ),
+                exe,
+            )
+        }
         other => bail!("unknown tool {other}"),
     })
 }
@@ -940,6 +1079,10 @@ fn extract_tar_gz(bytes: &[u8], t: &ToolFetch, dest_dir: &Path) -> Result<PathBu
     let mut archive = tar::Archive::new(dec);
     let target_name = binary_name(&t.tool);
     let mut found: Option<PathBuf> = None;
+
+    let is_buildkit = t.tool == "buildkit";
+    let is_containerd = t.tool == "containerd";
+
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry.path()?.to_path_buf();
@@ -948,7 +1091,24 @@ fn extract_tar_gz(bytes: &[u8], t: &ToolFetch, dest_dir: &Path) -> Result<PathBu
             .and_then(|s| s.to_str())
             .unwrap_or_default()
             .to_string();
-        if file == target_name || file == format!("{target_name}.exe") {
+
+        if is_buildkit {
+            if file == "buildctl" || file == "buildkitd" {
+                let dest = dest_dir.join(&file);
+                entry.unpack(&dest)?;
+                if file == "buildctl" {
+                    found = Some(dest);
+                }
+            }
+        } else if is_containerd {
+            if path.starts_with("bin/") {
+                let dest = dest_dir.join(&file);
+                entry.unpack(&dest)?;
+                if file == "containerd" {
+                    found = Some(dest);
+                }
+            }
+        } else if file == target_name || file == format!("{target_name}.exe") {
             let dest = dest_dir.join(&file);
             entry.unpack(&dest)?;
             found = Some(dest);
@@ -962,6 +1122,8 @@ fn binary_name(tool: &str) -> &str {
         "buildkit" => "buildctl",
         "lima" => "limactl",
         "rootlesskit" => "rootlesskit",
+        "containerd" => "containerd",
+        "runc" => "runc",
         other => other,
     }
 }

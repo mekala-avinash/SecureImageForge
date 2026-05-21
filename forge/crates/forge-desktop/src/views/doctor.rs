@@ -80,8 +80,7 @@ pub fn DoctorView() -> Element {
                     h2 { "Resolved Toolchain" }
                     if resolutions.iter().any(|(_, res)| res.is_err()) {
                         button { 
-                            class: "nav-item active", 
-                            style: "border: 0; padding: 8px 16px; border-radius: 8px;",
+                            class: "btn-primary", 
                             disabled: *running.read() || *success.read(),
                             onclick: move |_| { download_tools(); },
                             if *running.read() {
@@ -97,8 +96,7 @@ pub fn DoctorView() -> Element {
                 
                 if !logs.read().is_empty() {
                     pre { 
-                        class: "mono",
-                        style: "background: rgba(0,0,0,0.3); padding: 16px; border-radius: 8px; font-size: 12px; color: var(--ok); max-height: 200px; overflow-y: auto; border: 1px solid var(--rule);",
+                        class: "log",
                         "{logs.read()}"
                     }
                 }
@@ -108,10 +106,10 @@ pub fn DoctorView() -> Element {
                 }
 
                 table { 
-                    style: "width: 100%; border-collapse: collapse;",
+                    class: "data-table",
                     thead { tr { 
-                        th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Protocol/Tool" } 
-                        th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Resolution Path" } 
+                        th { "Protocol/Tool" } 
+                        th { "Resolution Path" } 
                     } }
                     tbody {
                         {resolutions.iter().map(|(tool, res)| {
@@ -123,10 +121,8 @@ pub fn DoctorView() -> Element {
                             rsx! {
                                 tr { 
                                     key: "{tool}",
-                                    style: "border-top: 1px solid var(--rule);",
-                                    td { style: "padding: 16px 12px;", span { class: "mono", style: "color: var(--accent);", "{tool}" } }
+                                    td { span { class: "mono", style: "color: var(--accent);", "{tool}" } }
                                     td { 
-                                        style: "padding: 16px 12px;",
                                         div {
                                             style: "display: flex; align-items: center; gap: 12px;",
                                             span { class: "status-badge {badge}", "{status_text}" }
@@ -144,22 +140,21 @@ pub fn DoctorView() -> Element {
                 div { class: "glass-card",
                     h2 { style: "margin-bottom: 20px;", "Vendor Manifest" }
                     table { 
-                        style: "width: 100%; border-collapse: collapse;",
+                        class: "data-table",
                         thead { tr {
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Tool" }
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Version" }
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "Platform" }
-                            th { style: "text-align: left; padding: 12px; color: var(--muted); font-size: 11px; text-transform: uppercase;", "SHA-256 Digest" }
+                            th { "Tool" }
+                            th { "Version" }
+                            th { "Platform" }
+                            th { "SHA-256 Digest" }
                         }}
                         tbody {
                             {m.tools.iter().map(|t| rsx! {
                                 tr { 
                                     key: "{t.name}-{t.platform}",
-                                    style: "border-top: 1px solid var(--rule);",
-                                    td { style: "padding: 16px 12px;", "{t.name}" }
-                                    td { style: "padding: 16px 12px;", span { class: "mono", "{t.version}" } }
-                                    td { style: "padding: 16px 12px;", "{t.platform}" }
-                                    td { style: "padding: 16px 12px; font-size: 11px; opacity: 0.5;", span { class: "mono", "{t.sha256}" } }
+                                    td { "{t.name}" }
+                                    td { span { class: "mono", "{t.version}" } }
+                                    td { "{t.platform}" }
+                                    td { class: "mono", style: "font-size: 11px; opacity: 0.5;", "{t.sha256}" }
                                 }
                             })}
                         }

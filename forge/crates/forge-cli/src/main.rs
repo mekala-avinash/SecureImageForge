@@ -457,7 +457,7 @@ async fn cmd_build(
         .clone()
         .or_else(|| cfg.registry.default_target.clone());
     let push = args.push || cfg.registry.default_push;
-    let bundled_prefix = toolchain.prefix().map(|p| p.to_path_buf());
+    let bundled_prefix = toolchain.prefix().map(|p| p.join(forge_core::toolchain::host_platform()));
 
     let registry_auth = forge_core::registry::resolve(runner.as_ref(), &cfg.registry.auth)
         .await

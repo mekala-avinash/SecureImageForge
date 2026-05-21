@@ -57,15 +57,23 @@ impl RuntimeManager {
 
         if !exists {
             info!("Provisioning Lima VM for buildkit...");
-            let template = r#"
+            let vendor_dir = find_vendor_dir(self.bundled_prefix.as_deref());
+            let mut mounts_section = String::from("- location: \"~\"\n  writable: true");
+            if let Some(ref path) = vendor_dir {
+                mounts_section.push_str(&format!(
+                    "\n- location: \"{}\"\n  mountPoint: \"/mnt/forge-vendor\"\n  writable: false",
+                    path.display()
+                ));
+            }
+
+            let template = format!(r#"
 images:
 - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
   arch: "x86_64"
 - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
   arch: "aarch64"
 mounts:
-- location: "~"
-  writable: true
+{mounts_section}
 containerd:
   system: false
   user: false
@@ -73,13 +81,51 @@ provision:
 - mode: system
   script: |
     #!/bin/sh
-    apt-get update
-    apt-get install -y buildkit
+    set -e
+    if [ -d /mnt/forge-vendor ]; then
+        echo "Installing from bundled vendor..."
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "x86_64" ]; then
+            VDIR="linux/amd64"
+        else
+            VDIR="linux/arm64"
+        fi
+        cp /mnt/forge-vendor/$VDIR/buildkitd /usr/local/bin/
+        cp /mnt/forge-vendor/$VDIR/buildctl /usr/local/bin/
+        cp /mnt/forge-vendor/$VDIR/runc /usr/local/bin/
+        if [ -f /mnt/forge-vendor/$VDIR/containerd ]; then
+            cp /mnt/forge-vendor/$VDIR/containerd* /usr/local/bin/
+        fi
+    else
+        echo "Bundled vendor not found, falling back to apt-get..."
+        apt-get update
+        apt-get install -y buildkit
+    fi
+    
+    # Create systemd service for buildkitd
+    echo '[Unit]' > /etc/systemd/system/buildkit.service
+    echo 'Description=BuildKit' >> /etc/systemd/system/buildkit.service
+    echo 'Documentation=https://github.com/moby/buildkit' >> /etc/systemd/system/buildkit.service
+    echo '' >> /etc/systemd/system/buildkit.service
+    echo '[Service]' >> /etc/systemd/system/buildkit.service
+    echo 'ExecStart=/usr/local/bin/buildkitd --addr unix:///run/buildkit/buildkitd.sock --group 1000' >> /etc/systemd/system/buildkit.service
+    echo 'Restart=always' >> /etc/systemd/system/buildkit.service
+    echo '' >> /etc/systemd/system/buildkit.service
+    echo '[Install]' >> /etc/systemd/system/buildkit.service
+    echo 'WantedBy=multi-user.target' >> /etc/systemd/system/buildkit.service
+
+    mkdir -p /run/buildkit
+    chmod +x /usr/local/bin/buildkitd /usr/local/bin/buildctl /usr/local/bin/runc
+    if [ -f /usr/local/bin/containerd ]; then
+        chmod +x /usr/local/bin/containerd*
+    fi
+    systemctl daemon-reload
     systemctl enable --now buildkit
 portForwards:
 - guestSocket: "/run/buildkit/buildkitd.sock"
-  hostSocket: "{{.Dir}}/sock/buildkitd.sock"
-"#;
+  hostSocket: "{{{{.Dir}}}}/sock/buildkitd.sock"
+"#, mounts_section = mounts_section);
+
             let temp_dir = std::env::temp_dir();
             let template_path = temp_dir.join("forge-lima.yaml");
             std::fs::write(&template_path, template)?;
@@ -128,21 +174,34 @@ portForwards:
             return Ok(addr);
         }
 
+        let mut path_env = std::env::var("PATH").unwrap_or_default();
+        if let Some(vendor_dir) = find_vendor_dir(self.bundled_prefix.as_deref()) {
+            let arch = if cfg!(target_arch = "x86_64") { "amd64" } else { "arm64" };
+            let platform_vendor = vendor_dir.join("linux").join(arch);
+            if platform_vendor.exists() {
+                path_env = format!("{}:{}", platform_vendor.display(), path_env);
+            }
+            if vendor_dir.exists() {
+                path_env = format!("{}:{}", vendor_dir.display(), path_env);
+            }
+        }
+
         info!("Starting rootless buildkitd...");
         tokio::spawn(async move {
-            let mut child = Command::new(rootlesskit)
-                .args([
-                    "--net=slirp4netns",
-                    "--copy-up=/etc",
-                    "--disable-host-loopback",
-                    buildkitd.to_str().unwrap(),
-                    "--addr",
-                    &addr_clone,
-                ])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("Failed to spawn rootlesskit");
+            let mut cmd = Command::new(rootlesskit);
+            cmd.env("PATH", path_env);
+            cmd.args([
+                "--net=slirp4netns",
+                "--copy-up=/etc",
+                "--disable-host-loopback",
+                buildkitd.to_str().unwrap(),
+                "--addr",
+                &addr_clone,
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+            
+            let mut child = cmd.spawn().expect("Failed to spawn rootlesskit");
             let _ = child.wait().await;
         });
         
@@ -154,4 +213,32 @@ portForwards:
         }
         Ok(addr)
     }
+}
+
+fn find_vendor_dir(bundled_prefix: Option<&Path>) -> Option<PathBuf> {
+    if let Some(prefix) = bundled_prefix {
+        if prefix.exists() {
+            if let Ok(abs) = std::fs::canonicalize(prefix) {
+                return Some(abs);
+            }
+            return Some(prefix.to_path_buf());
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let base_vendor = parent.join("vendor");
+            if base_vendor.exists() {
+                return Some(base_vendor);
+            }
+            let mut current = parent;
+            while let Some(up) = current.parent() {
+                let candidate = current.join("vendor");
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+                current = up;
+            }
+        }
+    }
+    None
 }

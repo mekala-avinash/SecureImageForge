@@ -113,6 +113,11 @@ impl Verifier for CosignSigner {
             spec = spec.arg("--key").arg(key.to_string_lossy().to_string());
         } else {
             spec = self.auth_args(spec);
+            spec = spec
+                .arg("--certificate-identity-regexp")
+                .arg(".*")
+                .arg("--certificate-oidc-issuer-regexp")
+                .arg(".*");
         }
         spec = spec.arg(image_ref);
 

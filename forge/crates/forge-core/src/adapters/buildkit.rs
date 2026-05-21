@@ -120,8 +120,6 @@ impl ImageBuilder for BuildkitBuilder {
             .clone()
             .or_else(|| self.config.local_tag.clone())
             .unwrap_or_else(|| format!("forge/{}:latest", sanitize(&spec.name)));
-        let push_flag = if self.config.push { "true" } else { "false" };
-
         // Multi-arch platform string (e.g. linux/amd64,linux/arm64).
         let platforms = spec
             .architectures
@@ -129,6 +127,17 @@ impl ImageBuilder for BuildkitBuilder {
             .map(|a| format!("linux/{}", arch_to_str(*a)))
             .collect::<Vec<_>>()
             .join(",");
+
+        let output_arg = if self.config.push {
+            format!("--output=type=image,name={},push=true", image_name)
+        } else {
+            let home = dirs::home_dir().ok_or_else(|| Error::Internal(anyhow::anyhow!("Could not find home directory")))?;
+            let tmp_dir = home.join(".secureimageforge").join("tmp");
+            std::fs::create_dir_all(&tmp_dir).map_err(Error::Io)?;
+            let tar_name = format!("{}.tar", sanitize(&image_name));
+            let tar_path = tmp_dir.join(tar_name);
+            format!("--output=type=docker,dest={},name={}", tar_path.display(), image_name)
+        };
 
         let mut process = ProcessSpec::new(buildctl.to_string_lossy().to_string())
             .arg("--addr")
@@ -138,9 +147,7 @@ impl ImageBuilder for BuildkitBuilder {
             .arg(format!("--local=context={}", context.display()))
             .arg(format!("--local=dockerfile={}", context.display()))
             .arg(format!("--opt=platform={platforms}"))
-            .arg(format!(
-                "--output=type=image,name={image_name},push={push_flag}"
-            ))
+            .arg(output_arg)
             .arg("--progress=plain");
 
         for (k, v) in process_env {

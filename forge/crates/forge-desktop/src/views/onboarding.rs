@@ -4,7 +4,7 @@ use crate::views::Route;
 
 #[component]
 pub fn Onboarding(route: Signal<Route>) -> Element {
-    let state = use_app_state();
+    let _state = use_app_state();
     let mut logs = use_signal(String::new);
     let mut running = use_signal(|| false);
     let mut success = use_signal(|| false);
@@ -40,39 +40,46 @@ pub fn Onboarding(route: Signal<Route>) -> Element {
     rsx! {
         section { class: "view",
             header { class: "view-header", h1 { "Welcome to SecureImageForge" } }
-            div { class: "panel",
-                h2 { "First-run setup" }
-                p { "SecureImageForge relies on several open-source tools (BuildKit, Trivy, Syft, Cosign, OPA) which are missing on your system." }
+            div { class: "glass-card",
+                style: "max-width: 800px;",
+                h2 { style: "margin-bottom: 16px;", "First-run Setup Sequence" }
+                p { style: "margin-bottom: 24px; color: var(--muted);", "SecureImageForge relies on several hardened cloud-native utilities (BuildKit, Trivy, Syft, Cosign, OPA) which are currently missing on your local environment." }
                 
-                div { class: "form-actions",
+                div { 
+                    style: "margin-bottom: 24px;",
                     button { 
-                        class: "btn btn-primary", 
+                        class: "btn-primary", 
                         disabled: *running.read() || *success.read(),
                         onclick: move |_| { download_tools(); },
                         if *running.read() {
-                            "Downloading..."
+                            "Downloading Host Binaries..."
                         } else if *success.read() {
-                            "Downloaded!"
+                            "Binaries Downloaded!"
                         } else {
-                            "Download tools"
+                            "Download Required Tools"
                         }
                     }
                 }
 
                 if !logs.read().is_empty() {
-                    pre { class: "log", "{logs.read()}" }
+                    pre { class: "log", style: "margin-bottom: 24px;", "{logs.read()}" }
                 }
 
                 if !error.read().is_empty() {
-                    p { class: "form-error", "{error.read()}" }
+                    p { style: "color: var(--signal); font-weight: 600; margin-bottom: 24px;", "{error.read()}" }
                 }
 
                 if *success.read() {
-                    div { class: "panel",
-                        h2 { "Step 2: Start BuildKit" }
-                        p { "You need to start the rootless BuildKit daemon before building images:" }
+                    div { 
+                        class: "glass-card",
+                        style: "border-color: var(--accent-glow); background: rgba(0, 242, 255, 0.02); padding: 20px; display: flex; flex-direction: column; gap: 16px;",
+                        h2 { "Step 2: Start BuildKit Daemon" }
+                        p { class: "muted", "You must launch the rootless BuildKit daemon to execute secure build matrices:" }
                         pre { class: "log", "buildkitd --rootless &" }
-                        button { class: "btn btn-primary", onclick: move |_| route.set(Route::NewBuild), "Continue" }
+                        div {
+                            style: "display: flex; justify-content: flex-end;",
+                            button { class: "btn-primary", onclick: move |_| route.set(Route::NewBuild), "Access Mission Control" }
+                        }
                     }
                 }
             }

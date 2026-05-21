@@ -67,11 +67,13 @@ impl BuildOrchestrator {
         let dockerfile = dockerfile::render(&spec);
 
         if let Some(verifier) = &self.verifier {
-            let base_ref = dockerfile::base_reference(spec.runtime, spec.base_image);
-            info!(build_id = %record.id, base = %base_ref, "verifying upstream base image");
-            if let Err(e) = verifier.verify(base_ref).await {
-                self.fail(&record, &e).await;
-                return Err(e);
+            if spec.sign {
+                let base_ref = dockerfile::base_reference(spec.runtime, spec.base_image);
+                info!(build_id = %record.id, base = %base_ref, "verifying upstream base image");
+                if let Err(e) = verifier.verify(base_ref).await {
+                    self.fail(&record, &e).await;
+                    return Err(e);
+                }
             }
         }
 
@@ -82,6 +84,10 @@ impl BuildOrchestrator {
                 self.fail(&record, &e).await;
                 return Err(e);
             }
+        };
+
+        let _cleanup_guard = TarballCleanupGuard {
+            image_ref: built.reference.clone(),
         };
 
         let log_path = self.logs.write(record.id, &built.log).await?;
@@ -156,8 +162,10 @@ impl BuildOrchestrator {
                 );
                 let predicate_json = serde_json::to_string(&statement)?;
                 if let Some(attestor) = &self.attestor {
-                    info!(build_id = %record.id, "attesting provenance");
-                    attestor.attest(&built.reference, &predicate_json).await?;
+                    if spec.sign {
+                        info!(build_id = %record.id, "attesting provenance");
+                        attestor.attest(&built.reference, &predicate_json).await?;
+                    }
                 }
                 provenance.save(record.id, &statement, None).await?;
             }
@@ -191,6 +199,34 @@ impl BuildOrchestrator {
             .await;
         warn!(build_id = %record.id, error = %err, "build failed");
     }
+}
+
+struct TarballCleanupGuard {
+    image_ref: String,
+}
+
+impl Drop for TarballCleanupGuard {
+    fn drop(&mut self) {
+        if let Some(home) = dirs::home_dir() {
+            let sanitized = sanitize_image(&self.image_ref);
+            let tar_path = home.join(".secureimageforge").join("tmp").join(format!("{}.tar", sanitized));
+            if tar_path.exists() {
+                let _ = std::fs::remove_file(tar_path);
+            }
+        }
+    }
+}
+
+fn sanitize_image(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

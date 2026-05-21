@@ -62,21 +62,24 @@ pub fn SettingsView() -> Element {
                         style: "display: grid; grid-template-columns: 1fr 1fr; gap: 24px;",
                         div { class: "form-row",
                             label { "BuildKit Endpoint" }
-                            input { r#type: "text", value: "{buildkit_addr.read()}", oninput: move |e| buildkit_addr.set(e.value()) }
+                            input { r#type: "text", placeholder: "e.g. unix:///var/run/buildkit/buildkitd.sock", value: "{buildkit_addr.read()}", oninput: move |e| buildkit_addr.set(e.value()) }
                         }
                         div { class: "form-row",
                             label { "Default Registry Mirror" }
-                            input { r#type: "text", value: "{registry_target.read()}", oninput: move |e| registry_target.set(e.value()) }
+                            input { r#type: "text", placeholder: "e.g. docker.io", value: "{registry_target.read()}", oninput: move |e| registry_target.set(e.value()) }
                         }
                     }
-                    div { class: "form-row",
-                        label { "Neural Update Channel" }
-                        select { 
-                            style: "width: 200px;",
-                            oninput: move |e| updater_channel.set(e.value()),
-                            option { value: "stable", selected: *updater_channel.read() == "stable", "Stable Release" }
-                            option { value: "beta", selected: *updater_channel.read() == "beta", "Beta Preview" }
+                    div { 
+                        style: "display: grid; grid-template-columns: 1fr 1fr; gap: 24px;",
+                        div { class: "form-row",
+                            label { "Neural Update Channel" }
+                            select { 
+                                oninput: move |e| updater_channel.set(e.value()),
+                                option { value: "stable", selected: *updater_channel.read() == "stable", "Stable Release" }
+                                option { value: "beta", selected: *updater_channel.read() == "beta", "Beta Preview" }
+                            }
                         }
+                        div {}
                     }
                     div { class: "form-actions",
                         button { class: "btn-primary", r#type: "submit", "Commit Changes" }
@@ -117,8 +120,8 @@ pub fn SettingsView() -> Element {
                                 span { style: "font-weight: 600;", "{from} → {to}" }
                             }
                             div { 
-                                class: "mono",
-                                style: "background: rgba(0,0,0,0.3); padding: 16px; border-radius: 8px; font-size: 11px; opacity: 0.8;",
+                                class: "log",
+                                style: "opacity: 0.8;",
                                 div { "Target: {release.platform}" }
                                 div { "Source: {release.url}" }
                                 div { "Digest: {release.sha256}" }

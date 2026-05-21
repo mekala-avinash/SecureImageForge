@@ -15,7 +15,8 @@ pub fn render(spec: &BuildSpec) -> String {
     let workdir = "/app";
     let entry = entrypoint(spec.runtime);
     let stripping = stripping_layer(spec.base_image, &spec.hardening);
-    let user_layer = user_layer(spec.runtime, spec.base_image, &spec.hardening);
+    let user_create = user_create_section(spec.base_image, &spec.hardening);
+    let user_switch = user_switch_section(spec.base_image, &spec.hardening);
     let labels = labels(spec);
 
     formatdoc! {r#"
@@ -29,9 +30,11 @@ pub fn render(spec: &BuildSpec) -> String {
 
         COPY . {workdir}
 
+        {user_create}
+
         {stripping}
 
-        {user_layer}
+        {user_switch}
 
         ENTRYPOINT {entry}
     "#}
@@ -96,13 +99,12 @@ fn stripping_layer(base: BaseImage, h: &HardeningOptions) -> String {
     format!("RUN {joined}")
 }
 
-fn user_layer(runtime: Runtime, base: BaseImage, h: &HardeningOptions) -> String {
+fn user_create_section(base: BaseImage, h: &HardeningOptions) -> String {
     if !h.non_root_user {
-        return "# Hardening: non-root user disabled.".to_string();
+        return "# Hardening: user creation skipped (non-root user disabled).".to_string();
     }
     if matches!(base, BaseImage::Distroless) {
-        // Distroless `nonroot` images already run as 65532; respect upstream.
-        return "USER nonroot".to_string();
+        return "# Distroless base has built-in nonroot user.".to_string();
     }
     let create = match base {
         BaseImage::Alpine => format!(
@@ -113,8 +115,17 @@ fn user_layer(runtime: Runtime, base: BaseImage, h: &HardeningOptions) -> String
         ),
         BaseImage::Distroless => unreachable!(),
     };
-    let _ = runtime;
-    format!("RUN {create}\nUSER {NON_ROOT_UID}:{NON_ROOT_GID}")
+    format!("RUN {create}")
+}
+
+fn user_switch_section(base: BaseImage, h: &HardeningOptions) -> String {
+    if !h.non_root_user {
+        return "# Hardening: non-root user disabled.".to_string();
+    }
+    if matches!(base, BaseImage::Distroless) {
+        return "USER nonroot".to_string();
+    }
+    format!("USER {NON_ROOT_UID}:{NON_ROOT_GID}")
 }
 
 fn labels(spec: &BuildSpec) -> String {

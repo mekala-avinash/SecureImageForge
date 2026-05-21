@@ -54,7 +54,21 @@ impl Scanner for TrivyScanner {
                 .arg("--severity")
                 .arg(severity_filter(&self.config.severities));
         }
-        spec = spec.arg(image_ref);
+
+        let mut tar_path = None;
+        if let Some(home) = dirs::home_dir() {
+            let sanitized = sanitize(image_ref);
+            let candidate = home.join(".secureimageforge").join("tmp").join(format!("{}.tar", sanitized));
+            if candidate.exists() {
+                tar_path = Some(candidate);
+            }
+        }
+
+        if let Some(path) = tar_path {
+            spec = spec.arg("--input").arg(path.to_string_lossy().to_string());
+        } else {
+            spec = spec.arg(image_ref);
+        }
 
         let out = self.runner.run(spec).await?;
         if out.status != 0 {
@@ -66,6 +80,18 @@ impl Scanner for TrivyScanner {
         }
         parse_trivy_json(&out.stdout)
     }
+}
+
+fn sanitize(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn severity_filter(severities: &[Severity]) -> String {

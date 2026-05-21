@@ -50,11 +50,27 @@ impl SyftSbomGenerator {
 impl SbomGenerator for SyftSbomGenerator {
     async fn generate(&self, image_ref: &str) -> Result<Sbom> {
         let syft = self.syft()?;
-        let spec = ProcessSpec::new(syft.to_string_lossy().to_string())
-            .arg(image_ref)
+        
+        let mut tar_path = None;
+        if let Some(home) = dirs::home_dir() {
+            let sanitized = sanitize(image_ref);
+            let candidate = home.join(".secureimageforge").join("tmp").join(format!("{}.tar", sanitized));
+            if candidate.exists() {
+                tar_path = Some(candidate);
+            }
+        }
+
+        let mut spec = ProcessSpec::new(syft.to_string_lossy().to_string());
+        if let Some(path) = tar_path {
+            spec = spec.arg(format!("docker-archive:{}", path.display()));
+        } else {
+            spec = spec.arg(image_ref);
+        }
+        spec = spec
             .arg("-o")
             .arg(&self.config.format)
             .arg("--quiet");
+
         let out = self.runner.run(spec).await?;
         if out.status != 0 {
             return Err(Error::ToolFailure {
@@ -74,6 +90,18 @@ impl SbomGenerator for SyftSbomGenerator {
             document,
         })
     }
+}
+
+fn sanitize(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

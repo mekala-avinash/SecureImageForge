@@ -28,7 +28,7 @@ pub fn start_build(state: &AppState, spec: BuildSpec) -> tokio::task::JoinHandle
 
     runtime().spawn(async move {
         let runner: Arc<TokioRunner> = Arc::new(TokioRunner);
-        let bundled_prefix = toolchain.prefix().map(|p| p.to_path_buf());
+        let bundled_prefix = toolchain.prefix().map(|p| p.join(forge_core::toolchain::host_platform()));
 
         let registry_auth = forge_core::registry::resolve(runner.as_ref(), &cfg.registry.auth)
             .await

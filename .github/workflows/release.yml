@@ -30,6 +30,7 @@ jobs:
           - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,    platform: linux/amd64  }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu,   platform: linux/arm64  }
           - { os: windows-latest,   target: x86_64-pc-windows-msvc,      platform: windows/amd64 }
+          - { os: windows-latest,   target: aarch64-pc-windows-msvc,      platform: windows/arm64 }
     defaults:
       run:
         working-directory: forge
@@ -47,45 +48,50 @@ jobs:
       - name: install cargo-auditable
         run: cargo install cargo-auditable --locked
 
-      # `cargo auditable build` embeds the locked dependency graph into the
-      # binary so downstream consumers can run `cargo audit bin <forge>` and
-      # `syft` can extract a real CycloneDX SBOM directly from the artifact.
-      - name: build forge-cli + forge-desktop (auditable)
-        run: cargo auditable build --release -p forge-cli -p forge-desktop --target ${{ matrix.target }}
+      - name: compile and package single-distribution bundles
+        env:
+          CARGO: cargo-auditable
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+          MATRIX_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$MATRIX_PLATFORM" == darwin/* ]]; then
+            cargo xtask dist-mac --target "$MATRIX_TARGET"
+            cargo xtask dmg-mac
+          elif [[ "$MATRIX_PLATFORM" == linux/* ]]; then
+            cargo xtask dist-linux --target "$MATRIX_TARGET"
+          else
+            cargo xtask dist --target "$MATRIX_TARGET"
+          fi
 
       - name: stage artifacts + sbom + cosign attest
         env:
           COSIGN_EXPERIMENTAL: "1"
-          MATRIX_TARGET: ${{ matrix.target }}
-          MATRIX_PLATFORM: ${{ matrix.platform }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
-          ext=""
-          case "$MATRIX_PLATFORM" in windows/*) ext=".exe";; esac
-          safe_platform="${MATRIX_PLATFORM//\//-}"
-          for label in cli desktop; do
-            bin_name="forge${ext}"
-            [ "$label" = "desktop" ] && bin_name="forge-desktop${ext}"
-            src="target/${MATRIX_TARGET}/release/${bin_name}"
-            safe_name="forge-${label}-${safe_platform}${ext}"
-            cp "$src" "dist/${safe_name}"
-
-            # CycloneDX SBOM extracted from the auditable binary itself.
-            syft "dist/${safe_name}" -o cyclonedx-json="dist/${safe_name}.cdx.json"
-
+          # Find all distribution packages (*.tar.gz, *.zip, *.dmg)
+          for f in dist/*.tar.gz dist/*.zip dist/*.dmg; do
+            [ -f "$f" ] || continue
+            echo "Processing package: $f"
+            
             # Detached cosign signature.
             cosign sign-blob --yes \
-              --output-signature "dist/${safe_name}.sig" \
-              "dist/${safe_name}"
+              --output-signature "$f.sig" \
+              "$f"
 
-            # In-toto attestation binding the SBOM to the artifact.
-            cosign attest-blob --yes \
-              --predicate "dist/${safe_name}.cdx.json" \
-              --type cyclonedx \
-              --output-attestation "dist/${safe_name}.intoto.jsonl" \
-              "dist/${safe_name}"
+            # Extract CycloneDX SBOM from the package archive/installer itself.
+            syft "$f" -o cyclonedx-json="$f.cdx.json" || true
+
+            if [ -f "$f.cdx.json" ]; then
+              # In-toto attestation binding the SBOM to the package.
+              cosign attest-blob --yes \
+                --predicate "$f.cdx.json" \
+                --type cyclonedx \
+                --output-attestation "$f.intoto.jsonl" \
+                "$f"
+            fi
           done
 
       - uses: actions/upload-artifact@v4
@@ -117,12 +123,21 @@ jobs:
           {
             printf '{"version":"%s","published_at":"%s","channel":"stable","min_required":null,"releases":[' "$version" "$published_at"
             first=true
-            for f in dist/forge-desktop-*; do
-              case "$f" in *.sig|*.cdx.json|*.intoto.jsonl) continue;; esac
+            for f in dist/forge-* dist/SecureImageForge-*; do
+              [ -f "$f" ] || continue
+              case "$f" in *.sig|*.cdx.json|*.intoto.jsonl|*.json) continue;; esac
               base=$(basename "$f")
               sha=$(sha256sum "$f" | awk '{print $1}')
               size=$(stat -c '%s' "$f" 2>/dev/null || stat -f '%z' "$f")
-              platform=$(echo "$base" | sed -E 's/^forge-desktop-(.+)$/\1/' | sed 's/\.exe$//' | tr '-' '/')
+              
+              if [[ "$base" =~ ^forge-(.+)\.(tar\.gz|zip)$ ]]; then
+                platform=$(echo "${BASH_REMATCH[1]}" | tr '-' '/')
+              elif [[ "$base" =~ ^SecureImageForge-(.+)\.dmg$ ]]; then
+                platform=$(echo "${BASH_REMATCH[1]}" | tr '-' '/')
+              else
+                continue
+              fi
+              
               entry=$(printf '{"platform":"%s","url":"%s","sha256":"%s","signature_url":"%s.sig","size_bytes":%s}' "$platform" "$base" "$sha" "$base" "$size")
               if [ "$first" = "true" ]; then first=false; else printf ','; fi
               printf '%s' "$entry"

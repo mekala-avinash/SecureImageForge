@@ -66,7 +66,7 @@ impl ApiState {
 
     pub async fn orchestrator(&self) -> BuildOrchestrator {
         let runner: Arc<TokioRunner> = Arc::new(TokioRunner);
-        let bundled_prefix = self.toolchain.prefix().map(|p| p.to_path_buf());
+        let bundled_prefix = self.toolchain.prefix().map(|p| p.join(forge_core::toolchain::host_platform()));
         let signer = Arc::new(CosignSigner::new(
             runner.clone(),
             CosignConfig {
@@ -133,7 +133,7 @@ impl ApiState {
 
 pub fn make_scanner(toolchain: &Arc<Toolchain>) -> Arc<dyn forge_core::tooling::Scanner> {
     let runner: Arc<TokioRunner> = Arc::new(TokioRunner);
-    let bundled_prefix = toolchain.prefix().map(|p| p.to_path_buf());
+    let bundled_prefix = toolchain.prefix().map(|p| p.join(forge_core::toolchain::host_platform()));
     Arc::new(MergedScanner {
         primary: Arc::new(TrivyScanner::new(
             runner.clone(),
