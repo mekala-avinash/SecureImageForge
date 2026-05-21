@@ -51,8 +51,14 @@ Documentation/architecture deliverable (NOT a runnable application).
 ## Status
 Complete — documentation deliverable. No application code was modified.
 
+## Updates
+- 2026-01: Added **leadership review package** under `/app/docs/leadership-review/`:
+  - `EXECUTIVE_BRIEFING.md` — 15-min CTO/CISO/CFO/VP-level briefing (the Ask, Why, Target, Phases, FTE, Risk, What we need from leadership)
+  - `PHASING_AND_FTE_APPROVAL.md` — formal Decision Register (D-1..D-12), phase-gate criteria, FTE quarterly allocation, hiring requisitions, budget envelope (~$15.3M total / $0.66M Phase 0), 9-approver sign-off block, post-approval Day 0–5 actions, change-control rules
+  - `README.md` — review-meeting flow (1-hour agenda)
+
 ## Next Actions
-- Review master document & roadmap with platform leadership.
-- Approve phasing & FTE allocation.
-- Begin Phase 0 quick wins (signed commits, secret scan, branch protection).
-- Stand up GitOps + Vault + Harbor + Backstage skeleton.
+- Circulate `EXECUTIVE_BRIEFING.md` to approvers (CTO, CISO, CFO, VP Platform, VP HR, Head of SRE, Head of Compliance, VPs Revenue) ahead of the review meeting.
+- Run the 1-hour leadership review using the agenda in `leadership-review/README.md`.
+- Capture signatures (or conditions/dissents) in `PHASING_AND_FTE_APPROVAL.md` §8.
+- On approval: execute Day 0–5 actions (kickoff comms, open 4 reqs, steering committee, GitOps repos, Drata eval, managed-Istio RFP, schedule first phase-gate review).
