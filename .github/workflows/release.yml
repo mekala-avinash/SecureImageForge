@@ -151,7 +151,7 @@ jobs:
           COSIGN_EXPERIMENTAL: "1"
         run: cosign sign-blob --yes --output-signature manifest.json.sig manifest.json
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/**
