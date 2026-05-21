@@ -1,0 +1,12 @@
+*                                   @acme/platform-team
+
+/modules/aws-*/                     @acme/platform-team @acme/cloud-infra
+/modules/azure-*/                   @acme/platform-team @acme/cloud-infra
+/modules/gcp-*/                     @acme/platform-team @acme/cloud-infra
+
+/modules/github-repo-protection/    @acme/platform-team @acme/security-team
+/modules/vault-*/                   @acme/platform-team @acme/security-team
+/modules/kms-*/                     @acme/platform-team @acme/security-team
+
+/helm-charts/                       @acme/platform-team @acme/devex-team
+/crossplane/                        @acme/platform-team @acme/cloud-infra

@@ -1,0 +1,52 @@
+# Cluster bootstrap (App-of-Apps) for mgmt-use1
+# Argo CD discovers every Application under platform/ via the root App that points here.
+#
+# This file is an example of explicit Application entries; the root App also recurses,
+# so each platform component can also be added as its own Application file alongside this one.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: { name: kyverno, namespace: argocd, annotations: { argocd.argoproj.io/sync-wave: "-50" } }
+spec:
+  project: default
+  source: { repoURL: https://github.com/acme/gitops, targetRevision: main, path: platform/kyverno }
+  destination: { server: https://kubernetes.default.svc, namespace: kyverno }
+  syncPolicy:
+    automated: { selfHeal: true, prune: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: { name: vault, namespace: argocd, annotations: { argocd.argoproj.io/sync-wave: "-40" } }
+spec:
+  project: default
+  source: { repoURL: https://github.com/acme/gitops, targetRevision: main, path: platform/vault }
+  destination: { server: https://kubernetes.default.svc, namespace: vault }
+  syncPolicy: { automated: { selfHeal: true, prune: true }, syncOptions: [CreateNamespace=true, ServerSideApply=true] }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: { name: harbor, namespace: argocd, annotations: { argocd.argoproj.io/sync-wave: "-30" } }
+spec:
+  project: default
+  source: { repoURL: https://github.com/acme/gitops, targetRevision: main, path: platform/harbor }
+  destination: { server: https://kubernetes.default.svc, namespace: harbor }
+  syncPolicy: { automated: { selfHeal: true, prune: true }, syncOptions: [CreateNamespace=true, ServerSideApply=true] }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: { name: observability, namespace: argocd, annotations: { argocd.argoproj.io/sync-wave: "-20" } }
+spec:
+  project: default
+  source: { repoURL: https://github.com/acme/gitops, targetRevision: main, path: platform/observability }
+  destination: { server: https://kubernetes.default.svc, namespace: observability }
+  syncPolicy: { automated: { selfHeal: true, prune: true }, syncOptions: [CreateNamespace=true, ServerSideApply=true] }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: { name: backstage, namespace: argocd, annotations: { argocd.argoproj.io/sync-wave: "-10" } }
+spec:
+  project: default
+  source: { repoURL: https://github.com/acme/gitops, targetRevision: main, path: platform/backstage }
+  destination: { server: https://kubernetes.default.svc, namespace: backstage }
+  syncPolicy: { automated: { selfHeal: true, prune: true }, syncOptions: [CreateNamespace=true, ServerSideApply=true] }

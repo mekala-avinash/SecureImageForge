@@ -1,0 +1,7 @@
+*                                   @acme/platform-team @acme/tenant-onboarding
+
+/_template/                         @acme/platform-team @acme/devex-team
+
+# PCI / HIPAA tenant directories require AppSec review
+/*-pci/                             @acme/platform-team @acme/security-team @acme/compliance-team
+/*-hipaa/                           @acme/platform-team @acme/security-team @acme/compliance-team

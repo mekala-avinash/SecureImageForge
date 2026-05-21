@@ -1,0 +1,21 @@
+# Root CODEOWNERS for acme/gitops
+# Required reviewers: at least 2 from CODEOWNERS for any change.
+
+# Default: platform team owns everything
+*                                   @acme/platform-team
+
+# Security-sensitive paths require both platform + security reviews
+/platform/kyverno/                  @acme/platform-team @acme/security-team
+/platform/vault/                    @acme/platform-team @acme/security-team
+/platform/argocd/                   @acme/platform-team @acme/security-team
+/platform/backstage/                @acme/platform-team @acme/devex-team
+/platform/observability/            @acme/platform-team @acme/sre-team
+
+# Compliance-evidence paths
+/platform/compliance/               @acme/platform-team @acme/compliance-team
+
+# Production cluster bootstraps require CAB-equivalent oversight
+/clusters/prod-*/                   @acme/platform-team @acme/sre-team @acme/security-team
+
+# Tenant overlays are co-owned with onboarding squad
+/apps/*/overlays/prod*/             @acme/platform-team @acme/sre-team

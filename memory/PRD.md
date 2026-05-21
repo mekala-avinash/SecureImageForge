@@ -57,8 +57,24 @@ Complete — documentation deliverable. No application code was modified.
   - `PHASING_AND_FTE_APPROVAL.md` — formal Decision Register (D-1..D-12), phase-gate criteria, FTE quarterly allocation, hiring requisitions, budget envelope (~$15.3M total / $0.66M Phase 0), 9-approver sign-off block, post-approval Day 0–5 actions, change-control rules
   - `README.md` — review-meeting flow (1-hour agenda)
 
+- 2026-01: Added **Day 0–5 execution pack** under `/app/docs/leadership-review/day-0-5/`:
+  1. Kickoff comms — eng all-hands slides, Slack post, leadership email, FAQ
+  2. 4 job descriptions — Sr Platform Engineer (×3), Staff DevSecOps, Compliance PM, Sr SRE
+  3. Steering committee charter + biweekly + phase-gate agenda template
+  4. GitOps bootstrap docs (see real repo skeletons at `/app/gitops-bootstrap/`)
+  5. Compliance automation vendor RFP (Drata / Vanta / Secureframe)
+  6. Managed-Istio RFP (Tetrate / Anthos / Solo.io)
+  7. Phase-0 gate review invite + reusable gate-review template
+
+- 2026-01: Added **GitOps bootstrap repos** under `/app/gitops-bootstrap/` ready to push:
+  - `gitops/` (acme/gitops): README, CODEOWNERS, Argo root-app App-of-Apps, cluster bootstrap, PR template, policy+build GH workflow
+  - `platform-repo/` (acme/platform): README, CODEOWNERS, layout for modules/crossplane/helm-charts
+  - `tenants-repo/` (acme/tenants): README, CODEOWNERS, layout for per-tenant overlays
+
 ## Next Actions
-- Circulate `EXECUTIVE_BRIEFING.md` to approvers (CTO, CISO, CFO, VP Platform, VP HR, Head of SRE, Head of Compliance, VPs Revenue) ahead of the review meeting.
-- Run the 1-hour leadership review using the agenda in `leadership-review/README.md`.
-- Capture signatures (or conditions/dissents) in `PHASING_AND_FTE_APPROVAL.md` §8.
-- On approval: execute Day 0–5 actions (kickoff comms, open 4 reqs, steering committee, GitOps repos, Drata eval, managed-Istio RFP, schedule first phase-gate review).
+- Day 0: Send kickoff comms (Slack + email + run all-hands).
+- Day 1: Open the 4 ATS requisitions using the JDs.
+- Day 1: Place Phase-0 gate review on calendars (Week 4 Friday 10:00).
+- Day 3: First steering committee meeting (charter + agenda ready).
+- Day 5: Push GitOps + Platform + Tenants repos with branch protection; engage compliance vendor for RFP; issue managed-Istio RFP.
+- Week 4: Run the Phase-0 gate review using the binding template.

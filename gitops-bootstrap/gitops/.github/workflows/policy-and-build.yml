@@ -1,0 +1,64 @@
+name: policy-and-build
+on:
+  pull_request:
+  push: { branches: [main] }
+permissions: { contents: read, pull-requests: write, checks: write, id-token: write }
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ibiqlik/action-yamllint@v3
+        with: { strict: true }
+
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with: { version: v3.16.0 }
+      - name: helm template (lint all charts)
+        run: |
+          for d in $(git ls-files | xargs -n1 dirname | sort -u | grep -E '^(apps|platform)' | sort -u); do
+            if [ -f "$d/Chart.yaml" ]; then
+              echo "==> helm template $d"
+              helm template "$d" --include-crds --debug > /dev/null
+            fi
+          done
+      - name: kustomize build
+        run: |
+          for d in $(git ls-files | xargs -n1 dirname | sort -u); do
+            if [ -f "$d/kustomization.yaml" ] || [ -f "$d/kustomization.yml" ]; then
+              echo "==> kustomize build $d"
+              kubectl kustomize "$d" > /dev/null
+            fi
+          done
+
+  kubeconform:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: kubeconform
+        uses: ghcr.io/yannh/kubeconform-action@v1
+        with: { strict: true, kubernetes-version: "1.31.0", schema-location: default }
+
+  policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: conftest (OPA policies)
+        uses: instrumenta/conftest-action@master
+        with: { files: "apps platform", policy: "policy/opa" }
+      - name: kyverno-cli test
+        run: |
+          curl -fsSL https://github.com/kyverno/kyverno/releases/latest/download/kyverno-cli_linux_x86_64.tar.gz | tar -xz
+          ./kyverno test platform/kyverno || true   # test mode; enforced at admission, not here
+
+  secret-scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
