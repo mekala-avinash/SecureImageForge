@@ -1,0 +1,69 @@
+# syntax=docker/dockerfile:1.7
+# =============================================================================
+# Hardened Go Runtime Image
+# Base: scratch / wolfi-static — fully static binary
+# Target size: <= 15 MB
+# =============================================================================
+
+ARG GO_VERSION=1.23
+
+# -----------------------------------------------------------------------------
+# Stage 1: Builder
+# -----------------------------------------------------------------------------
+FROM golang:${GO_VERSION}-alpine AS builder
+WORKDIR /src
+ENV CGO_ENABLED=0 \
+    GOFLAGS="-trimpath -mod=readonly" \
+    GOOS=linux
+
+RUN apk add --no-cache ca-certificates git tzdata
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    go mod download -x
+
+COPY . .
+ARG VERSION=dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE
+ARG TARGETARCH
+
+# Reproducible, stripped, statically-linked binary
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    GOARCH=${TARGETARCH} go build \
+      -ldflags="-s -w -buildid= -extldflags=-static \
+        -X main.version=${VERSION} \
+        -X main.commit=${VCS_REF} \
+        -X main.date=${BUILD_DATE}" \
+      -tags="netgo,osusergo,static_build" \
+      -o /out/app ./cmd/server
+
+# Verify static linkage
+RUN file /out/app | grep -q "statically linked" || { echo "FATAL: binary is not static"; exit 1; }
+
+# -----------------------------------------------------------------------------
+# Stage 2: Runtime — scratch with only CA certs + tz data + nonroot user
+# -----------------------------------------------------------------------------
+FROM cgr.dev/chainguard/static:latest AS runtime
+
+ARG VERSION
+ARG VCS_REF
+ARG BUILD_DATE
+ARG SERVICE_NAME
+LABEL org.opencontainers.image.title="${SERVICE_NAME}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.vendor="ACME" \
+      org.opencontainers.image.base.name="cgr.dev/chainguard/static"
+
+COPY --from=builder --chown=65532:65532 /out/app /app
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+
+USER 65532:65532
+EXPOSE 8080
+ENV TZ=UTC PORT=8080
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/app"]

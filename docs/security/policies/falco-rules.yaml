@@ -1,0 +1,39 @@
+apiVersion: falco.org/v1
+kind: FalcoRules
+metadata: { name: acme-baseline-rules }
+spec:
+  customRules:
+    - rule: Shell spawned in container
+      desc: A shell was executed inside a container — should never happen in hardened images
+      condition: >
+        container and shell_procs and proc.tty != 0
+        and not container.image.repository in (allowed_debug_images)
+      output: >
+        Shell spawned in container (user=%user.name container=%container.name image=%container.image.repository
+        cmdline=%proc.cmdline pid=%proc.pid)
+      priority: WARNING
+      tags: [container, shell, mitre_execution]
+
+    - rule: Write to read-only mount in container
+      desc: Container attempted a write under a read-only filesystem path
+      condition: >
+        container and evt.type in (open, openat, openat2) and (evt.arg.flags contains O_RDWR or evt.arg.flags contains O_WRONLY)
+        and fd.name startswith "/" and not fd.name startswith "/tmp" and not fd.name startswith "/var/run"
+      output: "RO-FS write attempt (container=%container.name file=%fd.name cmdline=%proc.cmdline)"
+      priority: ERROR
+      tags: [container, filesystem]
+
+    - rule: Unexpected egress connection
+      desc: Pod made egress connection outside Cilium-allowed list
+      condition: >
+        container and outbound and fd.sport != 0
+        and not fd.sip in (allowed_egress_ips)
+      output: "Unexpected egress (container=%container.name dst=%fd.sip:%fd.sport)"
+      priority: WARNING
+      tags: [container, network]
+
+  lists:
+    - name: allowed_debug_images
+      items: ["registry.acme.io/tooling/debug"]
+    - name: allowed_egress_ips
+      items: []   # populated via ConfigMap from CIDR feed

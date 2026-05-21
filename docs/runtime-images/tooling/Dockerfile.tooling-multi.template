@@ -1,0 +1,81 @@
+# syntax=docker/dockerfile:1.7
+# =============================================================================
+# Hardened Multi-Purpose Tooling Image
+# Single image with versioned binaries; selectable via ENTRYPOINT.
+# Variant images (git-only, terraform-only, etc.) FROM this with reduced layers.
+# =============================================================================
+
+FROM cgr.dev/chainguard/wolfi-base:latest AS fetcher
+ARG TARGETARCH
+ARG TARGETOS=linux
+
+# Versions are pinned; bumped by Dependency Agent.
+ARG GIT_VERSION=2.47.0
+ARG KUBECTL_VERSION=1.31.2
+ARG HELM_VERSION=3.16.2
+ARG TERRAFORM_VERSION=1.9.8
+ARG OPENTOFU_VERSION=1.8.5
+ARG ANSIBLE_VERSION=10.6.0
+ARG PACKER_VERSION=1.11.2
+ARG AWS_CLI_VERSION=2.18.0
+ARG AZURE_CLI_VERSION=2.66.0
+ARG GCLOUD_VERSION=498.0.0
+ARG VAULT_VERSION=1.18.0
+ARG TRIVY_VERSION=0.56.2
+ARG SYFT_VERSION=1.16.0
+ARG GRYPE_VERSION=0.83.0
+ARG COSIGN_VERSION=2.4.1
+ARG JQ_VERSION=1.7.1
+ARG YQ_VERSION=4.44.3
+ARG K6_VERSION=0.54.0
+ARG BUILDKIT_VERSION=0.16.0
+
+RUN apk add --no-cache curl tar gzip xz bash ca-certificates && mkdir -p /out/bin
+
+# (Excerpt — each binary fetched with curl, verified by SHA256, optionally cosign verified)
+RUN set -eux; ARCH="${TARGETARCH}"; \
+    curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" -o /out/bin/kubectl && \
+    chmod +x /out/bin/kubectl && \
+    curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-linux-${ARCH}.tar.gz" | tar -xz -C /tmp && \
+    mv /tmp/linux-${ARCH}/helm /out/bin/helm && \
+    curl -fsSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-${ARCH}" -o /out/bin/cosign && \
+    chmod +x /out/bin/cosign && \
+    curl -fsSL "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_${ARCH}.tar.gz" | tar -xz -C /tmp && \
+    mv /tmp/syft /out/bin/syft && \
+    curl -fsSL "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_${ARCH}.tar.gz" | tar -xz -C /tmp && \
+    mv /tmp/grype /out/bin/grype && \
+    curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-${ARCH^^}.tar.gz" | tar -xz -C /tmp && \
+    mv /tmp/trivy /out/bin/trivy
+
+# Verify all downloaded binaries (illustrative — real checksums maintained in /tooling-checksums.txt)
+RUN sha256sum /out/bin/*
+
+# -----------------------------------------------------------------------------
+# Stage: runtime — Wolfi base + git/jq/yq via apk + curated binaries
+# -----------------------------------------------------------------------------
+FROM cgr.dev/chainguard/wolfi-base:latest AS runtime
+ARG GIT_VERSION
+ARG JQ_VERSION
+ARG YQ_VERSION
+
+RUN apk add --no-cache \
+      ca-certificates \
+      git=~${GIT_VERSION} \
+      jq=~${JQ_VERSION} \
+      curl bash tini && \
+    rm -rf /var/cache/apk
+
+COPY --from=fetcher /out/bin/ /usr/local/bin/
+
+# yq fetched separately to ensure exact version (apk variant may lag)
+ARG TARGETARCH
+RUN curl -fsSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_${TARGETARCH}" -o /usr/local/bin/yq && \
+    chmod +x /usr/local/bin/yq
+
+# Non-root by default; CI jobs may opt-in to root with explicit override
+RUN addgroup -g 65532 ci && adduser -D -u 65532 -G ci ci
+USER 65532:65532
+WORKDIR /work
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["/bin/bash"]

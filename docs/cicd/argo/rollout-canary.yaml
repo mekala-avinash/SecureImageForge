@@ -1,0 +1,78 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata: { name: success-rate, namespace: prod-orders-api }
+spec:
+  args:
+    - { name: service-name }
+  metrics:
+    - name: success-rate
+      interval: 1m
+      successCondition: result[0] >= 0.995
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus.observability.svc:9090
+          query: |
+            sum(rate(http_requests_total{job="{{args.service-name}}",code=~"2..|3.."}[2m]))
+              /
+            sum(rate(http_requests_total{job="{{args.service-name}}"}[2m]))
+    - name: p99-latency
+      interval: 1m
+      successCondition: result[0] <= 0.250
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus.observability.svc:9090
+          query: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket{job="{{args.service-name}}"}[2m])) by (le))
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata: { name: orders-api, namespace: prod-orders-api }
+spec:
+  replicas: 12
+  revisionHistoryLimit: 5
+  strategy:
+    canary:
+      maxSurge: 25%
+      maxUnavailable: 0
+      canaryService: orders-api-canary
+      stableService: orders-api-stable
+      trafficRouting:
+        istio:
+          virtualService: { name: orders-api, routes: [primary] }
+      analysis:
+        templates:
+          - { templateName: success-rate }
+        args:
+          - { name: service-name, value: orders-api }
+        startingStep: 2
+      steps:
+        - setWeight: 5
+        - pause: { duration: 10m }
+        - setWeight: 25
+        - pause: { duration: 15m }
+        - setWeight: 50
+        - pause: { duration: 30m }
+        - setWeight: 100
+  selector: { matchLabels: { app: orders-api } }
+  template:
+    metadata:
+      labels: { app: orders-api }
+    spec:
+      serviceAccountName: orders-api
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: registry.acme.io/orders/api@sha256:REPLACE
+          ports: [{ name: http, containerPort: 8080 }]
+          resources:
+            requests: { cpu: 200m, memory: 256Mi }
+            limits:   { cpu: "1",  memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          readinessProbe: { httpGet: { path: /ready,   port: http } }
+          livenessProbe:  { httpGet: { path: /healthz, port: http } }

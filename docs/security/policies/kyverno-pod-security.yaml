@@ -1,0 +1,80 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: pod-security-restricted-baseline
+  annotations:
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: disallow-privileged
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "Privileged containers are forbidden."
+        pattern:
+          spec:
+            =(initContainers): [ { =(securityContext): { =(privileged): "false" } } ]
+            containers:        [ { =(securityContext): { =(privileged): "false" } } ]
+
+    - name: require-run-as-nonroot
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "Containers must runAsNonRoot=true and have a non-zero runAsUser."
+        anyPattern:
+          - spec:
+              securityContext: { runAsNonRoot: true }
+              containers:      [ { =(securityContext): { =(runAsNonRoot): true } } ]
+          - spec:
+              containers:
+                - securityContext:
+                    runAsNonRoot: true
+                    runAsUser: ">0"
+
+    - name: require-readonly-root-fs
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "readOnlyRootFilesystem must be true."
+        pattern:
+          spec:
+            containers: [ { securityContext: { readOnlyRootFilesystem: true } } ]
+
+    - name: drop-all-capabilities
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "Containers must drop ALL capabilities."
+        pattern:
+          spec:
+            containers: [ { securityContext: { capabilities: { drop: ["ALL"] } } } ]
+
+    - name: seccomp-runtime-default
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "seccompProfile must be RuntimeDefault (or Localhost approved profile)."
+        pattern:
+          spec:
+            =(securityContext): { =(seccompProfile): { type: "RuntimeDefault | Localhost" } }
+            containers: [ { =(securityContext): { =(seccompProfile): { type: "RuntimeDefault | Localhost" } } } ]
+
+    - name: disallow-host-namespaces-and-paths
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "hostNetwork/hostPID/hostIPC and hostPath volumes are forbidden."
+        pattern:
+          spec:
+            =(hostNetwork): "false"
+            =(hostPID):     "false"
+            =(hostIPC):     "false"
+            =(volumes):     [ { X(hostPath): "null" } ]
+
+    - name: require-resource-requests-limits
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      validate:
+        message: "All containers must declare CPU/memory requests and memory limits."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests: { cpu: "?*", memory: "?*" }
+                  limits:   { memory: "?*" }

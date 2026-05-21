@@ -1,0 +1,82 @@
+# =============================================================================
+# Common Agent Template — every agent MUST conform to this schema.
+# =============================================================================
+apiVersion: platform.acme.io/v1
+kind: Agent
+metadata:
+  name: <agent-name>
+  version: <semver>
+  owners: [team-platform-autonomy]
+spec:
+  identity:
+    spiffe_id: spiffe://platform.acme.io/agents/<name>/<version>
+    cloud_workload_identity:
+      aws: arn:aws:iam::<acct>:role/agent-<name>
+      azure: <workload-identity-uami>
+      gcp: <service-account>@<project>.iam.gserviceaccount.com
+    signing_key: cosign-keyless (Fulcio OIDC)
+  triggers:
+    - type: cron | webhook | event | metric-threshold | k8s-watch
+      config: {}
+  permissions:
+    k8s_rbac: { roleRefs: [...], minimal_verbs: true }
+    cloud_iam: { managed_policies: [], inline_least_privilege: true }
+    secrets: { vault_paths: [...], dynamic_only: true, ttl: 1h }
+    abac:
+      attributes: { team: <team>, env_scope: [dev,staging], data_class: [public,internal] }
+  sandbox:
+    runtime: gvisor          # or kata
+    image: registry.acme.io/agents/<name>@sha256:...
+    pod_spec:
+      runtimeClassName: gvisor
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        readOnlyRootFilesystem: true
+        seccompProfile: { type: RuntimeDefault }
+        capabilities: { drop: [ALL] }
+      resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { cpu: 1, memory: 1Gi } }
+    network:
+      egress_allowlist:
+        - host: api.github.com
+        - host: hooks.slack.com
+        - host: vault.acme.io
+        - host: temporal.acme.io
+      ingress: deny-all
+  state:
+    short_term: { backend: redis, ttl: 24h }
+    long_term:  { backend: postgres+pgvector, schema: agent_<name> }
+    artifacts:  { backend: s3, bucket: acme-agent-artifacts, retention: 90d }
+  coordination:
+    orchestrator: temporal
+    namespace: agents
+    task_queue: <agent-name>-tq
+    workflow_timeout: 1h
+    activity_retry: { max_attempts: 5, initial_interval: 30s, max_interval: 5m }
+  observability:
+    traces: otel → tempo
+    logs:   structured-json → loki  (fields: correlation_id, agent_id, decision_id, blast_radius, action)
+    metrics: prom  (decisions_total, action_latency_seconds, approval_pending, rollbacks_total)
+  audit:
+    sink: s3://acme-audit-worm/agents/<name>/  # Object Lock Compliance mode, 7y
+    signing: cosign-dsse
+  approval:
+    blast_radius_tiers:
+      none:     auto
+      low:      auto-with-cooloff       # 10 min holdback
+      medium:   human-in-loop-slack     # one human + 30 min auto-approve fallback
+      high:     2-person-rule           # CAB ticket + 2 distinct approvers
+      critical: change-advisory-board   # business-hours-only, full record
+  rollback:
+    strategy: compensating-activity   # Temporal SAGA pattern
+    retention_of_undo: 7d
+  escalation:
+    on_failure:
+      - notify: pagerduty
+      - pause_workflow: true
+      - quarantine_state: true
+  kill_switch:
+    flag: feature.agent.<name>.enabled
+    storage: configmap/global-feature-flags
+    read_interval: 30s

@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: orders-api
+  namespace: argocd
+spec:
+  generators:
+    - matrix:
+        generators:
+          - list:
+              elements:
+                - { env: dev,     region: us-east-1,  cluster: nonprod-use1, autoSync: true,  prune: true }
+                - { env: staging, region: us-east-1,  cluster: nonprod-use1, autoSync: true,  prune: true }
+                - { env: prod,    region: us-east-1,  cluster: prod-use1,    autoSync: false, prune: false }
+                - { env: prod,    region: eu-west-1,  cluster: prod-euw1,    autoSync: false, prune: false }
+                - { env: prod,    region: ap-south-1, cluster: prod-aps1,    autoSync: false, prune: false }
+          - clusters:
+              selector: { matchLabels: { type: workload } }
+  template:
+    metadata: { name: 'orders-api-{{env}}-{{region}}' }
+    spec:
+      project: orders
+      source:
+        repoURL: https://github.com/acme/gitops
+        targetRevision: main
+        path: 'apps/orders-api/overlays/{{env}}'
+        helm:
+          valueFiles: ['values.yaml', 'values.{{region}}.yaml']
+      destination:
+        server: '{{server}}'
+        namespace: '{{env}}-orders-api'
+      syncPolicy:
+        automated: { selfHeal: '{{autoSync}}', prune: '{{prune}}' }
+        syncOptions: [CreateNamespace=true, ApplyOutOfSyncOnly=true, ServerSideApply=true]
+        retry: { limit: 5, backoff: { duration: 30s, factor: 2, maxDuration: 5m } }

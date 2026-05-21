@@ -1,0 +1,43 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: prod-orders-api
+spec:
+  endpointSelector: {}
+  ingress: []
+  egress:
+    # DNS to kube-dns only
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            "k8s:k8s-app": kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-orders-api-egress
+  namespace: prod-orders-api
+spec:
+  endpointSelector:
+    matchLabels: { app: orders-api }
+  egress:
+    - toServices:
+        - k8sService: { serviceName: postgres-primary, namespace: prod-data }
+      toPorts: [{ ports: [{ port: "5432", protocol: TCP }] }]
+    - toServices:
+        - k8sService: { serviceName: redis-orders, namespace: prod-data }
+      toPorts: [{ ports: [{ port: "6379", protocol: TCP }] }]
+    - toFQDNs:
+        - { matchPattern: "*.payments.acme.io" }
+      toPorts: [{ ports: [{ port: "443", protocol: TCP }] }]
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": istio-system
+            "app": istio-ingressgateway
+      toPorts: [{ ports: [{ port: "8080", protocol: TCP }] }]

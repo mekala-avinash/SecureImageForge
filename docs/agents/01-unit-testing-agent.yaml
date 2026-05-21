@@ -1,0 +1,41 @@
+apiVersion: platform.acme.io/v1
+kind: Agent
+metadata: { name: unit-testing-agent, version: 1.0.0, owners: [team-platform-autonomy] }
+spec:
+  responsibilities:
+    - Analyze diff in opened PRs; generate or update unit tests for uncovered paths
+    - Enforce coverage threshold (default 80%; configurable per repo)
+    - Detect flaky tests via historical pass/fail mining; quarantine + open ticket
+    - Mutation-test critical modules (paths under /security, /payment) using Stryker/PIT
+  triggers:
+    - type: webhook
+      source: github.pull_request.{opened, synchronize}
+    - type: cron
+      schedule: "0 2 * * *"      # nightly mutation testing baseline
+  permissions:
+    github: { repos: [team-orders/*], scopes: [contents:write, pull_requests:write, checks:write] }
+    cloud_iam: read-only on artifact bucket
+  sandbox:
+    runtime: gvisor
+    image: registry.acme.io/agents/unit-testing@sha256:DEADBEEF
+    resources: { limits: { cpu: 2, memory: 2Gi } }
+  inputs:
+    - PR diff (paths, hunks)
+    - Existing test files + coverage report
+    - Language runtime (auto-detected from repo)
+  outputs:
+    - PR commit "test(auto): add coverage for <module>"
+    - GitHub Check Run with coverage delta
+    - Jira ticket for flaky tests (severity Low)
+  approval:
+    auto_merge: true
+    conditions:
+      - coverage_delta >= 0
+      - all checks green
+      - blast_radius == none
+      - only_test_files_touched: true
+  rollback: revert-commit
+  metrics:
+    - generated_tests_total
+    - coverage_delta_pct
+    - flaky_quarantined_total

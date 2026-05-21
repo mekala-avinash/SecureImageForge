@@ -1,0 +1,29 @@
+apiVersion: platform.acme.io/v1
+kind: Agent
+metadata: { name: supply-chain-security-agent, version: 1.0.0, owners: [team-appsec, team-platform-autonomy] }
+spec:
+  responsibilities:
+    - At admission time: verify every image has (a) Cosign signature from approved Fulcio subject, (b) SBOM attestation, (c) SLSA L3 provenance
+    - Block deployments missing any of the above
+    - Diff SBOMs across versions; flag new transitive deps
+    - Verify in-toto layout for build pipeline integrity
+    - Mirror Rekor transparency log entries to internal audit lake
+  triggers:
+    - type: k8s-watch ; resources: [Pod, ReplicaSet] (via Kyverno verifyImages + supplementary checks)
+    - type: event     ; source: registry.push
+    - type: cron      ; schedule: "*/10 * * * *"   # drift check vs Rekor
+  permissions:
+    cosign: keyless verify
+    rekor: read
+    k8s_rbac: [validatingwebhookconfigurations:read]
+  approval:
+    block_unsigned: true
+    block_missing_sbom: true
+    block_missing_provenance: true
+    allowlist_exceptions:
+      - registry: gcr.io/distroless/*  # vendor images with their own attestations
+      - registry: cgr.dev/chainguard/* # Chainguard images
+  metrics:
+    - admissions_blocked_total{reason}
+    - signature_verifications_total
+    - provenance_mismatch_total

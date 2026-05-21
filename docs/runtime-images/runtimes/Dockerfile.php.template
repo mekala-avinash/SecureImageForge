@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1.7
+# Hardened PHP 8.3 FPM — Wolfi-glibc, OPcache, non-root
+ARG PHP_VERSION=8.3
+FROM cgr.dev/chainguard/php:${PHP_VERSION}-fpm-dev AS builder
+WORKDIR /build
+COPY composer.json composer.lock ./
+RUN composer install --no-dev --no-scripts --prefer-dist --optimize-autoloader --no-interaction
+COPY . .
+RUN composer dump-autoload --classmap-authoritative
+
+FROM cgr.dev/chainguard/php:${PHP_VERSION}-fpm AS runtime
+ARG SERVICE_NAME
+ARG VERSION
+LABEL org.opencontainers.image.title="${SERVICE_NAME}" org.opencontainers.image.version="${VERSION}"
+WORKDIR /var/www/html
+COPY --from=builder --chown=65532:65532 /build /var/www/html
+COPY --chown=65532:65532 docker/php-fpm.conf /usr/local/etc/php-fpm.d/zz-prod.conf
+COPY --chown=65532:65532 docker/opcache.ini /usr/local/etc/php/conf.d/opcache.ini
+USER 65532:65532
+EXPOSE 9000
+HEALTHCHECK --interval=10s --timeout=2s CMD ["/usr/local/bin/php-fpm-healthcheck"] || exit 1
+ENTRYPOINT ["php-fpm", "--nodaemonize"]

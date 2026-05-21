@@ -1,0 +1,46 @@
+apiVersion: networking.istio.io/v1beta1
+kind: PeerAuthentication
+metadata: { name: default, namespace: istio-system }
+spec:
+  mtls: { mode: STRICT }
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata: { name: default-deny, namespace: prod-orders-api }
+spec:
+  {}   # empty rules = deny-all by default
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata: { name: allow-from-gateway, namespace: prod-orders-api }
+spec:
+  selector: { matchLabels: { app: orders-api } }
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: [ "cluster.local/ns/istio-system/sa/istio-ingressgateway" ]
+      to:
+        - operation:
+            methods: [GET, POST, PUT, PATCH, DELETE]
+            paths:   ["/api/*"]
+      when:
+        - { key: request.auth.claims[iss], values: [ "https://id.acme.io/" ] }
+        - { key: request.auth.claims[aud], values: [ "orders-api" ] }
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata: { name: orders-api, namespace: prod-orders-api }
+spec:
+  hosts: [orders-api]
+  http:
+    - name: primary
+      route:
+        - destination: { host: orders-api-stable, port: { number: 80 } }
+          weight: 100
+        - destination: { host: orders-api-canary, port: { number: 80 } }
+          weight: 0
+      retries: { attempts: 2, perTryTimeout: 2s, retryOn: "connect-failure,refused-stream,reset,5xx" }
+      timeout: 8s
+      fault:
+        delay: { percentage: { value: 0.0 }, fixedDelay: 0s }   # off by default

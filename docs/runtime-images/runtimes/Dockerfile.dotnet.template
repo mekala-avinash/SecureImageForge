@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1.7
+# Hardened .NET 9 — Wolfi-glibc, AOT where possible, non-root
+ARG DOTNET_VERSION=9.0
+
+FROM cgr.dev/chainguard/dotnet-sdk:${DOTNET_VERSION} AS builder
+WORKDIR /src
+COPY *.sln ./
+COPY src/ src/
+COPY tests/ tests/
+RUN dotnet restore -r linux-musl-x64
+RUN dotnet publish src/App/App.csproj \
+      -c Release \
+      -r linux-musl-x64 \
+      --self-contained true \
+      -p:PublishTrimmed=true \
+      -p:PublishSingleFile=true \
+      -p:DebugType=None \
+      -p:DebugSymbols=false \
+      -o /out
+
+FROM cgr.dev/chainguard/dotnet-runtime:${DOTNET_VERSION} AS runtime
+ARG SERVICE_NAME
+ARG VERSION
+LABEL org.opencontainers.image.title="${SERVICE_NAME}" org.opencontainers.image.version="${VERSION}"
+WORKDIR /app
+ENV ASPNETCORE_URLS=http://+:8080 \
+    DOTNET_RUNNING_IN_CONTAINER=true \
+    DOTNET_EnableDiagnostics=0 \
+    DOTNET_PrintTelemetryMessage=false
+COPY --from=builder --chown=65532:65532 /out /app
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/app/App"]

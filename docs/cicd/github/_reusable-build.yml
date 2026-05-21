@@ -1,0 +1,139 @@
+name: build-attest-publish
+on:
+  pull_request:
+  push: { branches: [main] }
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write            # OIDC for Cosign keyless + cloud
+  packages: write
+  attestations: write
+  security-events: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre-flight:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Verify signed commits
+        uses: sigstore/gitsign-verify@v0
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+      - name: SAST (Semgrep)
+        uses: semgrep/semgrep-action@v1
+        with: { config: "p/owasp-top-ten p/r2c-security-audit" }
+      - name: SCA (OSV)
+        uses: google/osv-scanner-action/.github/actions/osv-scanner-action@v2
+        with: { scan-args: "-r ." }
+      - name: IaC scan (Checkov)
+        uses: bridgecrewio/checkov-action@v12
+        with: { directory: "infra/" }
+
+  build:
+    needs: pre-flight
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+        with: { driver-opts: image=moby/buildkit:v0.16.0 }
+      - name: OIDC login to ECR
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT }}:role/gha-build
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: ECR login
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build & push (with provenance + SBOM)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          provenance: mode=max
+          sbom: true
+          cache-from: type=registry,ref=${{ vars.IMAGE_REPO }}:buildcache
+          cache-to:   type=registry,ref=${{ vars.IMAGE_REPO }}:buildcache,mode=max
+          tags: |
+            ${{ vars.IMAGE_REPO }}:${{ github.sha }}
+          outputs: type=image,name=${{ vars.IMAGE_REPO }},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+
+  scan:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ vars.IMAGE_REPO }}@${{ needs.build.outputs.digest }}
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          format: sarif
+          output: trivy.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        with: { sarif_file: trivy.sarif }
+
+  sign-attest:
+    needs: [build, scan]
+    runs-on: ubuntu-24.04
+    permissions: { id-token: write, contents: read, packages: write }
+    steps:
+      - uses: sigstore/cosign-installer@v3
+      - name: Cosign sign (keyless)
+        env: { COSIGN_EXPERIMENTAL: "1" }
+        run: cosign sign --yes ${{ vars.IMAGE_REPO }}@${{ needs.build.outputs.digest }}
+      - name: Generate & attest SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ vars.IMAGE_REPO }}@${{ needs.build.outputs.digest }}
+          format: spdx-json
+      - name: Attest SBOM
+        env: { COSIGN_EXPERIMENTAL: "1" }
+        run: |
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json \
+            ${{ vars.IMAGE_REPO }}@${{ needs.build.outputs.digest }}
+
+  slsa-provenance:
+    needs: [build]
+    permissions: { id-token: write, contents: read, packages: write, actions: read }
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.0.0
+    with:
+      image: ${{ vars.IMAGE_REPO }}
+      digest: ${{ needs.build.outputs.digest }}
+      registry-username: ${{ vars.ECR_USER }}
+    secrets:
+      registry-password: ${{ secrets.ECR_PASS }}
+
+  gitops-bump:
+    needs: [sign-attest, slsa-provenance]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { repository: acme/gitops, token: ${{ secrets.GITOPS_TOKEN }} }
+      - name: Bump image digest in env overlay
+        run: |
+          yq -i '.spec.values.image.digest = "${{ needs.build.outputs.digest }}"' \
+            apps/orders-api/overlays/staging/values.yaml
+      - name: Open PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bump/orders-api-${{ github.sha }}
+          commit-message: "chore(orders-api): bump to ${{ needs.build.outputs.digest }}"
+          title: "Bump orders-api → ${{ github.sha }}"
+          body: |
+            Auto-promotion to staging.
+            - Digest: `${{ needs.build.outputs.digest }}`
+            - SLSA provenance attested.
+            - SBOM attested.

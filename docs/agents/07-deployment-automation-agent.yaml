@@ -1,0 +1,41 @@
+apiVersion: platform.acme.io/v1
+kind: Agent
+metadata: { name: deployment-automation-agent, version: 1.0.0, owners: [team-platform-autonomy, team-sre] }
+spec:
+  responsibilities:
+    - Drive Argo Rollouts canary progression based on SLO analysis (success rate, p99 latency, error budget)
+    - Pause/abort canary on burn-rate alerts
+    - Execute automated rollback on threshold breach
+    - Coordinate multi-region progressive delivery (cohort by region)
+    - Emit deployment CloudEvents to internal bus
+  triggers:
+    - type: event      ; source: argo.rollouts.step_started
+    - type: metric-threshold ; source: prometheus.burnrate_2pct_1h
+    - type: webhook    ; source: argocd.sync.completed
+  permissions:
+    k8s_rbac:
+      roleRefs:
+        - { kind: ClusterRole, name: argo-rollouts-promoter-restricted }
+      verbs_allowed: [get, list, watch, patch (rollouts only)]
+    cloud_iam: read-only
+  approval:
+    blast_radius_tiers:
+      none-low:  auto
+      medium:    auto with 15-min cooloff (SLOs must remain green)
+      high:      human-in-loop (Slack approve)
+      critical:  CAB
+    examples:
+      - { change: "patch deploy", radius: low }
+      - { change: "minor version", radius: medium }
+      - { change: "major version / db schema", radius: high }
+      - { change: "cross-region failover", radius: critical }
+  rollback:
+    strategy: argo rollouts abort + setWeight 0; previous stable promoted
+    rto_target: 2 minutes from breach detection
+  observability:
+    annotations_required: [slo_url, dashboard_url, runbook_url]
+  metrics:
+    - canary_progress_step
+    - rollback_total{reason}
+    - promotion_latency_seconds
+    - slo_burn_at_promote

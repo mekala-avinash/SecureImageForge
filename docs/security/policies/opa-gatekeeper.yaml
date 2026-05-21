@@ -1,0 +1,62 @@
+# OPA / Gatekeeper ConstraintTemplate + Constraint examples
+# These augment Kyverno where Rego expressiveness is preferred (cross-resource correlation).
+---
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata: { name: k8sallowedregistries }
+spec:
+  crd:
+    spec:
+      names: { kind: K8sAllowedRegistries }
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            registries: { type: array, items: { type: string } }
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sallowedregistries
+        violation[{"msg": msg}] {
+          input.review.kind.kind == "Pod"
+          c := input.review.object.spec.containers[_]
+          not registry_allowed(c.image)
+          msg := sprintf("image %q is not from an allowed registry", [c.image])
+        }
+        registry_allowed(image) {
+          some r
+          r := input.parameters.registries[_]
+          startswith(image, r)
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sAllowedRegistries
+metadata: { name: only-acme-registries }
+spec:
+  match:
+    kinds: [{ apiGroups: [""], kinds: [Pod] }]
+    excludedNamespaces: [kube-system, gatekeeper-system, kyverno]
+  parameters:
+    registries:
+      - "registry.acme.io/"
+      - "cgr.dev/chainguard/"
+      - "gcr.io/distroless/"
+      - "ghcr.io/sigstore/"
+---
+# Separation of duties: an identity cannot both author + approve + deploy
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata: { name: k8ssod }
+spec:
+  crd: { spec: { names: { kind: K8sSod } } }
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8ssod
+        violation[{"msg": msg}] {
+          input.review.kind.kind == "Application"   # Argo CD App
+          author := input.review.object.metadata.annotations["author.acme.io/user"]
+          approver := input.review.object.metadata.annotations["approver.acme.io/user"]
+          author == approver
+          msg := sprintf("author and approver are the same identity %q (SoD violation)", [author])
+        }

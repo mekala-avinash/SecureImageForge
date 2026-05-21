@@ -1,0 +1,30 @@
+apiVersion: platform.acme.io/v1
+kind: Agent
+metadata: { name: incident-analysis-agent, version: 1.0.0, owners: [team-sre] }
+spec:
+  responsibilities:
+    - Subscribe to PagerDuty incident events
+    - Correlate alerts, traces, logs, deploys within ±30 min of incident
+    - Generate timeline + suspected blast radius
+    - Draft blameless RCA in Backstage TechDocs (Markdown)
+    - Open action item tickets in Jira; link to RCA
+    - Suggest auto-remediation playbook re-runs
+  triggers:
+    - type: webhook ; source: pagerduty.incident.triggered
+    - type: webhook ; source: pagerduty.incident.resolved
+  permissions:
+    prometheus: read
+    loki: read
+    tempo: read
+    argocd: read
+    github: { scopes: [contents:write] }   # for RCA markdown commit
+    jira: { scopes: [issue:create] }
+  approval:
+    rca_publish: human-reviewer (SRE lead)
+    auto_remediation_rerun: human-in-loop
+  state:
+    long_term: postgres+pgvector  (semantic search of past incidents for similar)
+  metrics:
+    - incidents_correlated_total
+    - rca_publish_lead_time_hours
+    - similar_incident_match_ratio

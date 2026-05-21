@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1.7
+# =============================================================================
+# Hardened Rust Runtime Image
+# Base: scratch — fully static musl binary
+# Target size: <= 12 MB
+# =============================================================================
+
+ARG RUST_VERSION=1.81
+
+FROM rust:${RUST_VERSION}-alpine AS builder
+WORKDIR /src
+RUN apk add --no-cache musl-dev openssl-dev pkgconfig ca-certificates
+RUN rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+
+# Dependency caching (cargo-chef pattern)
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo "fn main(){}" > src/main.rs
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release --target x86_64-unknown-linux-musl --locked
+RUN rm -rf src target/x86_64-unknown-linux-musl/release/deps/app*
+
+COPY . .
+ARG VERSION=dev
+ARG TARGETARCH
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    case "${TARGETARCH}" in \
+      amd64) TGT=x86_64-unknown-linux-musl ;; \
+      arm64) TGT=aarch64-unknown-linux-musl ;; \
+    esac && \
+    cargo build --release --locked --target ${TGT} && \
+    cp target/${TGT}/release/app /out-app && \
+    strip /out-app
+
+FROM cgr.dev/chainguard/static:latest AS runtime
+ARG VERSION
+ARG SERVICE_NAME
+LABEL org.opencontainers.image.title="${SERVICE_NAME}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.vendor="ACME"
+COPY --from=builder --chown=65532:65532 /out-app /app
+USER 65532:65532
+EXPOSE 8080
+ENV PORT=8080 TZ=UTC RUST_LOG=info
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/app"]

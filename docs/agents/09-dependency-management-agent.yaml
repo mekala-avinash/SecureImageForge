@@ -1,0 +1,25 @@
+apiVersion: platform.acme.io/v1
+kind: Agent
+metadata: { name: dependency-management-agent, version: 1.0.0, owners: [team-platform-autonomy] }
+spec:
+  responsibilities:
+    - Watch CVE feeds (NVD, GHSA, OSV, vendor advisories) for impacted deps
+    - Open Renovate-style PRs with patches; group low-risk; isolate high-risk
+    - Compute risk score per upgrade: { breaking?, reach (transitive), exploitability, popularity }
+    - Auto-merge low-risk (score < 2) after PR pipeline green
+    - Schedule risky upgrades with human review; pin until then
+    - Track EOL/EOSL libraries; pro-actively recommend replacements
+  triggers:
+    - type: event ; source: cve-feed
+    - type: cron  ; schedule: "0 6 * * 1"   # weekly housekeeping
+  permissions:
+    github: { repos: ["*"], scopes: [contents:write, pull_requests:write] }
+  approval:
+    low_risk:  auto-merge after green pipeline
+    med_risk:  human approver
+    high_risk: 2-person + soak in staging 7d
+  metrics:
+    - cves_patched_total
+    - patch_lead_time_hours
+    - auto_merge_ratio
+    - rollback_after_dep_upgrade_total

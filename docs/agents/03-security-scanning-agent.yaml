@@ -1,0 +1,35 @@
+apiVersion: platform.acme.io/v1
+kind: Agent
+metadata: { name: security-scanning-agent, version: 1.0.0, owners: [team-appsec] }
+spec:
+  responsibilities:
+    - Run SAST (Semgrep + CodeQL) on PR diff
+    - Run SCA (OSV-scanner + Grype) on lockfiles
+    - Run secret scan (gitleaks, trufflehog) on full history of changed files
+    - Run IaC scan (Checkov, tfsec, KICS) for IaC changes
+    - Triage findings → severity → PR comments with auto-fix suggestions
+  triggers:
+    - type: webhook  ; source: github.pull_request.{opened,synchronize}
+    - type: cron     ; schedule: "0 */6 * * *"   # nightly full re-scan of main
+    - type: event    ; source: cve-feed (NVD, GHSA, OSV)
+  permissions:
+    github: { scopes: [contents:read, pull_requests:write, security_events:write, checks:write] }
+    vault: { paths: ["secrets/data/scanners/*"], ttl: 30m }
+    jira:  { project: SEC, scopes: [issue:create] }
+  inputs: [PR diff, full repo for full-scan mode, CVE feed event]
+  outputs:
+    - PR check (pass/warn/block)
+    - Inline review comments with CWE id + auto-fix patch
+    - Jira ticket per HIGH+ finding (with SLA)
+    - SARIF upload to GitHub Security tab
+  approval:
+    block_on:
+      sast_high_or_critical: true
+      sca_critical: true
+      secret_detected: true
+      iac_high: true
+  rollback: n/a (read-mostly)
+  metrics:
+    - findings_total{severity, scanner}
+    - mttr_finding_seconds
+    - false_positive_rate

@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.7
+# Hardened Ruby 3.3 — Wolfi-glibc, non-root, jemalloc, bundler frozen
+ARG RUBY_VERSION=3.3
+FROM cgr.dev/chainguard/ruby:${RUBY_VERSION}-dev AS builder
+WORKDIR /build
+ENV BUNDLE_FROZEN=true BUNDLE_DEPLOYMENT=true BUNDLE_WITHOUT="development:test" \
+    LD_PRELOAD=/usr/lib/libjemalloc.so.2 MALLOC_CONF=narenas:2
+COPY Gemfile Gemfile.lock ./
+RUN bundle config set --local without 'development test' && \
+    bundle install --jobs 4 --retry 3
+COPY . .
+RUN bundle exec rake assets:precompile || true
+
+FROM cgr.dev/chainguard/ruby:${RUBY_VERSION} AS runtime
+ARG SERVICE_NAME
+ARG VERSION
+LABEL org.opencontainers.image.title="${SERVICE_NAME}" org.opencontainers.image.version="${VERSION}"
+WORKDIR /app
+ENV RAILS_ENV=production RACK_ENV=production PORT=8080 \
+    BUNDLE_FROZEN=true BUNDLE_DEPLOYMENT=true \
+    LD_PRELOAD=/usr/lib/libjemalloc.so.2
+COPY --from=builder --chown=65532:65532 /build /app
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["bundle", "exec", "puma", "-C", "config/puma.rb"]

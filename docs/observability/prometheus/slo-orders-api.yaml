@@ -1,0 +1,53 @@
+# Prometheus rule: SLO + multi-window multi-burn-rate alerts for orders-api
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: orders-api-slo
+  namespace: observability
+  labels: { team: orders, slo: "true" }
+spec:
+  groups:
+    - name: orders-api.recording
+      interval: 30s
+      rules:
+        - record: job:http_requests:rate5m
+          expr: sum by (job, code) (rate(http_requests_total{job="orders-api"}[5m]))
+        - record: job:http_request_errors:ratio5m
+          expr: |
+            sum(rate(http_requests_total{job="orders-api",code=~"5.."}[5m]))
+              /
+            sum(rate(http_requests_total{job="orders-api"}[5m]))
+        - record: job:http_request_errors:ratio1h
+          expr: |
+            sum(rate(http_requests_total{job="orders-api",code=~"5.."}[1h]))
+              /
+            sum(rate(http_requests_total{job="orders-api"}[1h]))
+        - record: job:http_request_errors:ratio6h
+          expr: |
+            sum(rate(http_requests_total{job="orders-api",code=~"5.."}[6h]))
+              /
+            sum(rate(http_requests_total{job="orders-api"}[6h]))
+
+    - name: orders-api.alerts
+      rules:
+        - alert: OrdersApiErrorBudgetFastBurn
+          expr: |
+            (job:http_request_errors:ratio5m > 14.4 * (1 - 0.9995))
+            and
+            (job:http_request_errors:ratio1h > 14.4 * (1 - 0.9995))
+          for: 2m
+          labels: { severity: page, team: orders, slo: requests-availability }
+          annotations:
+            summary: "orders-api SLO fast-burn (2%/1h budget consumed)"
+            runbook_url: https://backstage.acme.io/docs/orders/runbooks/slo-burn
+            dashboard_url: https://grafana.acme.io/d/orders-api
+        - alert: OrdersApiErrorBudgetSlowBurn
+          expr: |
+            (job:http_request_errors:ratio6h > 6 * (1 - 0.9995))
+            and
+            (job:http_request_errors:ratio1h > 6 * (1 - 0.9995))
+          for: 15m
+          labels: { severity: ticket, team: orders }
+          annotations:
+            summary: "orders-api SLO slow-burn (5%/6h budget consumed)"
+            runbook_url: https://backstage.acme.io/docs/orders/runbooks/slo-burn

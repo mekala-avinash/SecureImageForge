@@ -1,0 +1,71 @@
+apiVersion: kyverno.io/v2beta1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures-and-attestations
+  annotations:
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+spec:
+  validationFailureAction: Enforce
+  background: false
+  webhookTimeoutSeconds: 30
+  failurePolicy: Fail
+  rules:
+    - name: require-cosign-signature
+      match:
+        any:
+          - resources: { kinds: [Pod] }
+      exclude:
+        any:
+          - resources: { namespaces: [kube-system, kyverno, gatekeeper-system] }
+      verifyImages:
+        - imageReferences:
+            - "registry.acme.io/*"
+            - "*.dkr.ecr.*.amazonaws.com/acme/*"
+          required: true
+          mutateDigest: true
+          verifyDigest: true
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    subject: "https://github.com/acme/*"
+                    issuer:  "https://token.actions.githubusercontent.com"
+                    rekor:   { url: "https://rekor.sigstore.dev" }
+                - keyless:
+                    subject: "spiffe://platform.acme.io/builders/*"
+                    issuer:  "https://oidc.acme.io"
+                    rekor:   { url: "https://rekor.acme.io" }
+
+    - name: require-slsa-provenance
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      verifyImages:
+        - imageReferences: ["registry.acme.io/*"]
+          attestations:
+            - type: "https://slsa.dev/provenance/v1"
+              attestors:
+                - entries:
+                    - keyless:
+                        subject: "https://github.com/acme/*"
+                        issuer:  "https://token.actions.githubusercontent.com"
+              conditions:
+                - all:
+                    - key: "{{ buildDefinition.buildType }}"
+                      operator: Equals
+                      value:    "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1"
+                    - key: "{{ runDetails.builder.id }}"
+                      operator: AnyIn
+                      value:    ["https://github.com/acme/.github/workflows/build.yml@refs/heads/main"]
+
+    - name: require-sbom-attestation
+      match: { any: [{ resources: { kinds: [Pod] } }] }
+      verifyImages:
+        - imageReferences: ["registry.acme.io/*"]
+          attestations:
+            - type: "https://spdx.dev/Document"
+              attestors:
+                - entries:
+                    - keyless:
+                        subject: "https://github.com/acme/*"
+                        issuer:  "https://token.actions.githubusercontent.com"
