@@ -83,4 +83,10 @@ Complete — documentation deliverable. No application code was modified.
   2. Observability rollout — rollout plan, Helm values for Prometheus / Loki / Tempo
   3. Single-region prod cluster — EKS Terraform module, Karpenter NodePools, Cilium values
   4. SOC 2 Type II audit-window prep — full control test plan, evidence collection schedule
+- **Phase 1 Week 1 execution kit** at `docs/phase-1/week-1-milestones/` + `working-sessions/` + `mid-point-review/`:
+  - Week-1 milestone tracker (5 deliverables × 4 workstreams = 20 items)
+  - Daily async standup cheatsheet
+  - Wednesday working session agenda template
+  - Mid-point review (Week 6) template with course-correction option matrix
+- **Placeholder substitution helper** at `/app/scripts/redline-placeholders.sh` (38 occurrences surveyed; one-shot fill-and-apply form).
 - **Operator execution checklist** at `docs/leadership-review/day-0-5/OPERATOR_EXECUTION_CHECKLIST.md` for the 3 remaining human-only actions (redline minutes, send vendor emails, run push-all.sh).
