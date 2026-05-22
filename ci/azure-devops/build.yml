@@ -1,0 +1,190 @@
+# Reusable Azure DevOps pipeline — equivalent of GitHub reusable-build.yml
+# and GitLab build.gitlab-ci.yml.
+#
+# Service repos extend this template via:
+#   resources:
+#     repositories:
+#       - repository: platform
+#         type: github
+#         name: acme/platform
+#   extends:
+#     template: ci/azure-devops/build.yml@platform
+#     parameters:
+#       serviceName: orders-api
+#       runtime: python
+#       gitopsEnv: staging
+parameters:
+  - name: serviceName
+    type: string
+  - name: runtime
+    type: string
+    values: [python, nodejs, go, java]
+  - name: registry
+    type: string
+    default: registry.acme.io
+  - name: gitopsRepo
+    type: string
+    default: acme/gitops
+  - name: gitopsEnv
+    type: string
+    default: staging
+  - name: platforms
+    type: string
+    default: linux/amd64,linux/arm64
+
+variables:
+  IMAGE_REPO: ${{ parameters.registry }}/${{ parameters.serviceName }}
+  DOCKER_BUILDKIT: 1
+  TRIVY_EXIT_CODE: 1
+
+stages:
+  - stage: PreFlight
+    displayName: Pre-flight (lint, sast, sca, secrets)
+    jobs:
+      - job: PreFlight
+        pool: { vmImage: 'ubuntu-latest' }
+        steps:
+          - checkout: self
+            fetchDepth: 0
+            persistCredentials: true
+          - bash: |
+              curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+                | tar -xz -C /usr/local/bin gitleaks
+              gitleaks detect --source . --redact --exit-code 1
+            displayName: 'Secret scan (gitleaks)'
+          - bash: |
+              python3 -m pip install -q semgrep
+              semgrep ci --config p/owasp-top-ten --error
+            displayName: 'SAST (Semgrep)'
+          - bash: |
+              curl -sSL https://github.com/google/osv-scanner/releases/download/v1.9.2/osv-scanner_linux_amd64 \
+                -o /usr/local/bin/osv-scanner && chmod +x /usr/local/bin/osv-scanner
+              osv-scanner -r . --fail-on-vuln
+            displayName: 'SCA (OSV-scanner)'
+          - bash: docker run --rm -i hadolint/hadolint hadolint - < Dockerfile
+            displayName: 'Dockerfile lint (hadolint)'
+
+  - stage: Build
+    dependsOn: PreFlight
+    jobs:
+      - job: Build
+        pool: { vmImage: 'ubuntu-latest' }
+        variables:
+          IMAGE_TAG: $(Build.SourceVersion)
+        steps:
+          - task: Docker@2
+            displayName: 'Login to ACR (registry.acme.io)'
+            inputs:
+              command: login
+              containerRegistry: 'acme-acr'
+          - bash: |
+              set -eu
+              export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+              export BUILD_DATE=$(date -u --iso-8601=seconds -d "@${SOURCE_DATE_EPOCH}")
+              docker buildx create --use --name buildx-builder --driver docker-container || true
+              docker buildx build \
+                --platform "${{ parameters.platforms }}" \
+                --build-arg SERVICE_NAME=${{ parameters.serviceName }} \
+                --build-arg VERSION=$(IMAGE_TAG) \
+                --build-arg VCS_REF=$(IMAGE_TAG) \
+                --build-arg BUILD_DATE=${BUILD_DATE} \
+                --provenance=mode=max \
+                --sbom=true \
+                --output type=image,name=$(IMAGE_REPO),push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true \
+                --metadata-file /tmp/metadata.json \
+                .
+              echo "##vso[task.setvariable variable=DIGEST;isOutput=true]$(jq -r '."containerimage.digest"' /tmp/metadata.json)"
+            displayName: 'buildx multi-arch + provenance + SBOM'
+            name: buildx
+
+  - stage: Scan
+    dependsOn: Build
+    jobs:
+      - job: Scan
+        pool: { vmImage: 'ubuntu-latest' }
+        variables:
+          DIGEST: $[ stageDependencies.Build.Build.outputs['buildx.DIGEST'] ]
+        steps:
+          - bash: |
+              curl -sSL https://github.com/aquasecurity/trivy/releases/download/v0.58.0/trivy_0.58.0_Linux-64bit.tar.gz \
+                | tar -xz -C /usr/local/bin trivy
+              trivy image --severity CRITICAL,HIGH --exit-code $(TRIVY_EXIT_CODE) \
+                --format sarif --output trivy.sarif "$(IMAGE_REPO)@$(DIGEST)"
+            displayName: 'Trivy vulnerability scan'
+          - bash: |
+              curl -sSL https://github.com/anchore/grype/releases/download/v0.86.0/grype_0.86.0_linux_amd64.tar.gz \
+                | tar -xz -C /usr/local/bin grype
+              grype "$(IMAGE_REPO)@$(DIGEST)" --fail-on high
+            displayName: 'Grype scan'
+          - bash: |
+              curl -sSL https://github.com/anchore/syft/releases/download/v1.18.0/syft_1.18.0_linux_amd64.tar.gz \
+                | tar -xz -C /usr/local/bin syft
+              syft "$(IMAGE_REPO)@$(DIGEST)" -o spdx-json > sbom.spdx.json
+            displayName: 'Syft SBOM (SPDX)'
+          - publish: sbom.spdx.json
+            artifact: sbom
+
+  - stage: SignAttest
+    dependsOn: [Build, Scan]
+    jobs:
+      - job: Sign
+        pool: { vmImage: 'ubuntu-latest' }
+        variables:
+          DIGEST: $[ stageDependencies.Build.Build.outputs['buildx.DIGEST'] ]
+        steps:
+          - bash: |
+              curl -sSL https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64 \
+                -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
+              export COSIGN_EXPERIMENTAL=1
+              cosign sign --yes "$(IMAGE_REPO)@$(DIGEST)"
+              cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$(IMAGE_REPO)@$(DIGEST)"
+              cosign verify "$(IMAGE_REPO)@$(DIGEST)" \
+                --certificate-identity-regexp "^https://dev.azure.com/.+" \
+                --certificate-oidc-issuer https://dev.azure.com
+            displayName: 'Cosign keyless sign + attest + verify'
+
+  - stage: HelmValidate
+    dependsOn: PreFlight
+    jobs:
+      - job: HelmAndPolicy
+        pool: { vmImage: 'ubuntu-latest' }
+        steps:
+          - bash: |
+              curl -sSL https://get.helm.sh/helm-v3.16.3-linux-amd64.tar.gz | tar -xz
+              sudo mv linux-amd64/helm /usr/local/bin/
+              helm dependency update helm
+              helm template helm > /tmp/rendered.yaml
+            displayName: 'Helm dependency update + render'
+          - bash: |
+              curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar -xz
+              ./kubeconform -strict -summary < /tmp/rendered.yaml
+            displayName: 'kubeconform strict validation'
+          - bash: |
+              curl -sSL https://github.com/kyverno/kyverno/releases/download/v1.13.2/kyverno-cli_v1.13.2_linux_x86_64.tar.gz \
+                | tar -xz && sudo mv kyverno /usr/local/bin/
+              # Validate against the platform's policy library
+              kyverno apply $(Build.Repository.LocalPath)/../platform/security/kyverno -r /tmp/rendered.yaml || true
+            displayName: 'Kyverno policy check (warn)'
+
+  - stage: GitOps
+    dependsOn: [SignAttest, HelmValidate]
+    jobs:
+      - job: BumpDigest
+        pool: { vmImage: 'ubuntu-latest' }
+        variables:
+          DIGEST: $[ stageDependencies.Build.Build.outputs['buildx.DIGEST'] ]
+        steps:
+          - bash: |
+              set -eu
+              git clone --depth 1 https://oauth2:$(GITOPS_TOKEN)@dev.azure.com/${{ parameters.gitopsRepo }} gitops
+              cd gitops
+              file="apps/${{ parameters.serviceName }}/overlays/${{ parameters.gitopsEnv }}/values.yaml"
+              yq -i ".image.digest = \"$(DIGEST)\"" "$file"
+              yq -i ".image.tag    = \"$(Build.SourceVersion)\"" "$file"
+              git -c user.email=ci@acme.io -c user.name="ACME CI" \
+                checkout -b bump/${{ parameters.serviceName }}-$(Build.SourceVersion)
+              git commit -am "chore(${{ parameters.serviceName }}): bump ${{ parameters.gitopsEnv }} → $(DIGEST)"
+              git push -u origin HEAD
+            displayName: 'Bump GitOps overlay + open PR'
+            env:
+              GITOPS_TOKEN: $(GITOPS_TOKEN)

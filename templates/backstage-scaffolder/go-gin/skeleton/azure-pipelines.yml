@@ -1,0 +1,16 @@
+trigger:
+  branches: { include: [main] }
+pr:
+  branches: { include: ['*'] }
+resources:
+  repositories:
+    - repository: platform
+      type: github
+      name: acme/platform
+      ref: refs/heads/main
+extends:
+  template: ci/azure-devops/build.yml@platform
+  parameters:
+    serviceName: {{service_name}}
+    runtime: go
+    gitopsEnv: staging

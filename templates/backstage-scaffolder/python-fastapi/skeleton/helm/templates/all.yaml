@@ -1,0 +1,16 @@
+# Render every paved-road primitive from a single include.
+{{ include "acme.workload"       . }}
+---
+{{ include "acme.service"        . }}
+---
+{{ include "acme.hpa"            . }}
+---
+{{ include "acme.pdb"            . }}
+---
+{{ include "acme.networkPolicy"  . }}
+---
+{{ include "acme.istioAuthz"     . }}
+---
+{{ include "acme.serviceMonitor" . }}
+---
+{{ include "acme.slo"            . }}

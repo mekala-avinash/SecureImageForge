@@ -1,0 +1,15 @@
+name: reference-service
+team: platform
+image:
+  repository: registry.acme.io/reference-service
+  # digest set by GitOps PR
+replicaCount: 3
+otel: { enabled: true, sdk: auto }
+slos:
+  enabled: true
+  objectives:
+    - name: requests-availability
+      objective: 99.95
+      sli:
+        errorQuery: 'sum(rate(http_requests_total{job="reference-service",code=~"5.."}[5m]))'
+        totalQuery: 'sum(rate(http_requests_total{job="reference-service"}[5m]))'

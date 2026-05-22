@@ -1,0 +1,7 @@
+include:
+  - project: acme/platform
+    file: /ci/gitlab-ci/build.gitlab-ci.yml
+    ref: main
+variables:
+  SERVICE_NAME: {{service_name}}
+  RUNTIME: java

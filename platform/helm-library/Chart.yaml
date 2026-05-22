@@ -1,0 +1,37 @@
+# Helm Library Chart — `acme-platform-lib`
+#
+# A library chart (NOT installable directly) that provides every primitive a
+# service needs: Deployment, Service, HPA, PDB, NetworkPolicy, ServiceAccount,
+# ServiceMonitor, PrometheusRule, Argo Rollout, AuthorizationPolicy, etc.
+#
+# Service charts include this as a dependency and call its templates with
+# `{{ include "acme.deployment" . }}` etc.
+#
+# Why a library chart?
+#   - Single source of truth for security defaults (non-root, RO FS, dropped caps).
+#   - Updates flow to all services via a chart-version bump.
+#   - Service charts stay small (just `values.yaml` + a `templates/everything.yaml`
+#     that includes the library templates).
+apiVersion: v2
+name: acme-platform-lib
+description: ACME paved-road library chart. Provides hardened K8s primitives.
+type: library
+version: 1.0.0
+appVersion: "1.0.0"
+kubeVersion: ">= 1.30.0"
+home: https://backstage.acme.io/docs/default/component/platform-helm-library
+sources:
+  - https://github.com/acme/platform
+maintainers:
+  - name: Platform Engineering
+    email: platform@acme.io
+keywords:
+  - paved-road
+  - library
+  - hardened
+  - opinionated
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial release (Phase 1 paved-road v1.0.0)

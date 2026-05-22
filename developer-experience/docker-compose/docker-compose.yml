@@ -1,0 +1,54 @@
+# Local development stack. Mirrors the in-cluster platform dependencies
+# (Postgres + Redis + OTel collector) so devs hit the same SDK paths locally as in prod.
+#
+# Usage:
+#   docker compose up -d           # start deps in background
+#   docker compose logs -f otel    # tail collector to verify your traces flow
+#
+# The reference service (and any service scaffolded by pavedroad) is configured
+# to point at these endpoints when ACME_ENV=local.
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 10 }
+
+  # Single-process OTel collector that fans signals to local Jaeger + console
+  # logs. Same processor stack as the in-cluster collector.
+  otel:
+    image: otel/opentelemetry-collector-contrib:0.110.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-local.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    depends_on: [jaeger]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # UI
+      - "14250:14250"
+
+  # Optional: a local Prometheus to scrape the service's /metrics during dev.
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    volumes: ["./prometheus-local.yaml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]

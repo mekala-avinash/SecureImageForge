@@ -1,0 +1,25 @@
+# Service-specific Helm values — overrides defaults from acme-platform-lib.
+name: {{service_name}}
+team: {{team}}
+image:
+  repository: registry.acme.io/{{service_name}}
+  # digest is set by the GitOps PR; do not hand-edit.
+
+replicaCount: 3
+service: { port: 80, targetPort: 8080 }
+
+# Service-specific SLO: 99.95% availability + p99 < 250ms.
+slos:
+  enabled: true
+  objectives:
+    - name: requests-availability
+      objective: 99.95
+      sli:
+        errorQuery: 'sum(rate(http_requests_total{job="{{service_name}}",code=~"5.."}[5m]))'
+        totalQuery: 'sum(rate(http_requests_total{job="{{service_name}}"}[5m]))'
+
+otel:
+  enabled: true
+  sdk: auto
+
+# Override per-env in overlays/{dev,staging,prod}/values.yaml.

@@ -1,0 +1,23 @@
+[project]
+name = "pavedroad-cli"
+version = "1.1.0"
+description = "ACME paved-road developer CLI: scaffold, doctor, migrate, promote, watch."
+requires-python = ">=3.11"
+dependencies = [
+  "typer>=0.12.5",
+  "rich>=13.9.0",
+  "cookiecutter>=2.6.0",
+  "pyyaml>=6.0.2",
+  "httpx>=0.27.0",
+  "questionary>=2.0.1",
+]
+
+[project.scripts]
+pavedroad = "pavedroad.cli:app"
+
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pavedroad"]

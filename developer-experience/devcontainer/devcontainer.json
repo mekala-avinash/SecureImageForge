@@ -1,0 +1,40 @@
+{
+  "name": "ACME paved-road devcontainer",
+  "image": "registry.acme.io/tooling/devcontainer:1.0.0",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {},
+    "ghcr.io/devcontainers-extra/features/cosign:1": {},
+    "ghcr.io/devcontainers-extra/features/syft:1": {}
+  },
+  "containerUser": "nonroot",
+  "remoteUser": "nonroot",
+  "workspaceFolder": "/workspace",
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
+  ],
+  "runArgs": ["--init", "--security-opt=no-new-privileges"],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-azuretools.vscode-docker",
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "hashicorp.terraform",
+        "redhat.vscode-yaml",
+        "tamasfe.even-better-toml",
+        "github.vscode-github-actions",
+        "ms-vscode.makefile-tools",
+        "esbenp.prettier-vscode",
+        "charliermarsh.ruff"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "python.testing.pytestEnabled": true,
+        "files.associations": { "*.tpl": "helm" }
+      }
+    }
+  },
+  "postCreateCommand": "make bootstrap && pavedroad doctor || true",
+  "postStartCommand": "echo 'Welcome to ACME paved-road. Run: make dev'"
+}

@@ -1,0 +1,171 @@
+# Helm library chart defaults.
+#
+# Service charts override these. Do NOT remove a key here without a major
+# chart version bump — services depend on the schema.
+
+# ─── Required (services must set) ──────────────────────────────────────────
+name: ""                 # service name (also used as label selector)
+team: ""                 # owning team (used in labels + alerts routing)
+image:
+  repository: ""         # registry.acme.io/<team>/<service>
+  digest: ""             # sha256:... — set by GitOps PR, never by hand
+  pullPolicy: IfNotPresent
+
+# ─── Sensible defaults (override as needed) ────────────────────────────────
+replicaCount: 3
+revisionHistoryLimit: 5
+
+# Workload kind. "deployment" (default) or "rollout" (Argo Rollouts canary).
+kind: deployment
+
+# Pod-level security context (Pod Security Standard "restricted" baseline)
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
+  capabilities:
+    drop: ["ALL"]
+
+# Resources (every service MUST set requests + memory limit; CPU limit optional)
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+    ephemeral-storage: 100Mi
+  limits:
+    memory: 256Mi
+    ephemeral-storage: 500Mi
+
+# Service exposure
+service:
+  enabled: true
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+  protocol: TCP
+  appProtocol: http
+
+# Probes — overridable; defaults assume /healthz and /ready endpoints
+probes:
+  startup:   { httpGet: { path: /healthz, port: http }, failureThreshold: 30, periodSeconds: 2 }
+  liveness:  { httpGet: { path: /healthz, port: http }, periodSeconds: 10, timeoutSeconds: 2, failureThreshold: 3 }
+  readiness: { httpGet: { path: /ready,   port: http }, periodSeconds: 5,  timeoutSeconds: 2, failureThreshold: 3 }
+
+# Horizontal Pod Autoscaler
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 30
+  targetCPUUtilizationPercentage: 60
+  customMetrics: []        # e.g. RPS via Prometheus Adapter
+
+# Pod Disruption Budget
+pdb:
+  enabled: true
+  minAvailable: 75%
+
+# Topology spread (multi-AZ by default)
+topologySpread:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+
+# Argo Rollouts (when kind=rollout)
+rollout:
+  strategy:
+    canary:
+      steps:
+        - setWeight: 5
+        - pause: { duration: 10m }
+        - setWeight: 25
+        - pause: { duration: 15m }
+        - setWeight: 50
+        - pause: { duration: 30m }
+        - setWeight: 100
+      analysis:
+        templateName: standard-slo
+        startingStep: 2
+
+# Network policy (Cilium-flavored CRD by default)
+networkPolicy:
+  enabled: true
+  # Allow only Istio ingress gateway + kube-dns by default.
+  # Add service-specific egress as `extraEgress`.
+  extraEgress: []
+  extraIngress: []
+
+# Istio
+istio:
+  enabled: true
+  mtls: STRICT
+  authorization:
+    enabled: true
+    # JWKS-validated principals allowed to call this service
+    principals: []
+
+# OpenTelemetry instrumentation injection
+otel:
+  enabled: true
+  sdk: auto          # auto = OTel operator injects sidecar/env; manual = service self-instruments
+  serviceName: ""    # defaults to .Values.name
+  resourceAttributes:
+    deployment.environment: ""   # overridden per env overlay
+
+# ServiceMonitor (Prometheus Operator)
+serviceMonitor:
+  enabled: true
+  port: http
+  path: /metrics
+  interval: 30s
+  scrapeTimeout: 10s
+
+# SLOs as code (rendered into PrometheusServiceLevel Sloth CRD)
+slos:
+  enabled: true
+  objectives:
+    - name: requests-availability
+      objective: 99.95
+      sli:
+        errorQuery: 'sum(rate(http_requests_total{job="{{ .Values.name }}",code=~"5.."}[5m]))'
+        totalQuery: 'sum(rate(http_requests_total{job="{{ .Values.name }}"}[5m]))'
+    - name: requests-latency
+      objective: 99.0
+      sli:
+        errorQuery: 'sum(rate(http_request_duration_seconds_bucket{job="{{ .Values.name }}",le="0.250"}[5m]))'
+        totalQuery: 'sum(rate(http_request_duration_seconds_count{job="{{ .Values.name }}"}[5m]))'
+
+# Vault dynamic secrets via CSI Secrets Store
+secrets:
+  enabled: false
+  provider: vault
+  spcName: ""        # SecretProviderClass to mount
+  mountPath: /var/run/secrets/app
+
+# Extra env / volumes / volumeMounts pass-throughs
+env: []
+envFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+
+# Annotations / labels
+podAnnotations: {}
+podLabels: {}
+serviceAccount:
+  create: true
+  annotations: {}    # e.g. IRSA: eks.amazonaws.com/role-arn
+
+# Image pull secrets (rare — most images are public-readable from Harbor)
+imagePullSecrets: []

@@ -1,0 +1,64 @@
+# Backstage Software Template — Python FastAPI on the paved road.
+# Usage in Backstage:
+#   - Place this directory under your Backstage repo as a registered location, OR
+#   - host this repo and register: https://github.com/acme/platform/blob/main/templates/backstage-scaffolder/python-fastapi/template.yaml
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: python-fastapi-paved-road
+  title: Python FastAPI (paved road)
+  description: Scaffold a new Python FastAPI service onto the ACME paved road.
+  tags: [recommended, python, fastapi, paved-road]
+spec:
+  owner: group:platform-engineering
+  type: service
+  parameters:
+    - title: Service metadata
+      required: [name, team, description]
+      properties:
+        name:        { type: string, title: Service name (kebab-case), pattern: "^[a-z][a-z0-9-]{2,40}$" }
+        team:        { type: string, title: Owning team slug, description: "e.g. orders, payments, identity" }
+        description: { type: string, title: One-line description }
+    - title: Repository
+      required: [repoUrl]
+      properties:
+        repoUrl:
+          type: string
+          title: Repository location
+          ui:field: RepoUrlPicker
+          ui:options: { allowedHosts: [github.com] }
+  steps:
+    - id: fetch
+      name: Fetch skeleton
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          name: ${{ parameters.name }}
+          team: ${{ parameters.team }}
+          description: ${{ parameters.description }}
+    - id: publish
+      name: Publish to GitHub
+      action: publish:github
+      input:
+        allowedHosts: [github.com]
+        description: ${{ parameters.description }}
+        repoUrl: ${{ parameters.repoUrl }}
+        defaultBranch: main
+        protectDefaultBranch: true
+        requireCodeOwnerReviews: true
+        gitAuthorName:  "ACME Backstage"
+        gitAuthorEmail: "backstage@acme.io"
+    - id: register
+      name: Register in Backstage catalog
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps.publish.output.repoContentsUrl }}
+        catalogInfoPath: /catalog-info.yaml
+  output:
+    links:
+      - title: Open repository
+        url:   ${{ steps.publish.output.remoteUrl }}
+      - title: Open in Backstage catalog
+        icon:  catalog
+        entityRef: ${{ steps.register.output.entityRef }}

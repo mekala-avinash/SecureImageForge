@@ -1,0 +1,13 @@
+name: build
+on:
+  pull_request:
+  push: { branches: [main] }
+jobs:
+  build:
+    uses: acme/platform/.github/workflows/reusable-build.yml@main
+    with:
+      service-name: {{service_name}}
+      runtime: java
+      gitops-env: staging
+    secrets:
+      gitops-token: ${{ secrets.GITOPS_TOKEN }}

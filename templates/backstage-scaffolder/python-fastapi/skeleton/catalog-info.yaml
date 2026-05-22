@@ -1,0 +1,28 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: {{service_name}}
+  title: {{service_name}}
+  description: Paved-road Python FastAPI service.
+  annotations:
+    github.com/project-slug: acme/{{service_name}}
+    backstage.io/techdocs-ref: dir:.
+    grafana/dashboard-selector: "service={{service_name}}"
+    prometheus.io/alert: "team={{team}}"
+spec:
+  type: service
+  lifecycle: production
+  owner: group:{{team}}
+  system: {{team}}-platform
+  providesApis: [{{service_name}}-api]
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: {{service_name}}-api
+spec:
+  type: openapi
+  lifecycle: production
+  owner: group:{{team}}
+  definition:
+    $text: ./openapi.yaml

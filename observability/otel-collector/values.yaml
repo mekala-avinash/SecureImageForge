@@ -1,0 +1,64 @@
+# OTel Collector — gateway deployment, one per cluster.
+# Receives OTLP from auto-instrumented pods, batches, redacts PII, tail-samples,
+# fan-outs to Tempo (traces), Mimir/Prometheus (metrics), Loki (logs).
+mode: deployment
+replicaCount: 6
+image: { repository: otel/opentelemetry-collector-contrib, tag: 0.110.0 }
+service: { type: ClusterIP }
+ports:
+  otlp:      { enabled: true, containerPort: 4317, protocol: TCP }
+  otlp-http: { enabled: true, containerPort: 4318, protocol: TCP }
+  metrics:   { enabled: true, containerPort: 8888, protocol: TCP }
+podSecurityContext: { runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: { type: RuntimeDefault } }
+securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+resources:
+  requests: { cpu: 500m, memory: 1Gi }
+  limits:   { cpu: 2,    memory: 4Gi }
+
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc: { endpoint: 0.0.0.0:4317 }
+        http: { endpoint: 0.0.0.0:4318 }
+  processors:
+    memory_limiter: { check_interval: 5s, limit_mib: 1500, spike_limit_mib: 256 }
+    batch:          { send_batch_size: 8192, timeout: 5s }
+    resource:
+      attributes:
+        - { key: deployment.environment, value: ${env:CLUSTER_ENV}, action: insert }
+        - { key: cloud.region,           value: ${env:CLOUD_REGION}, action: insert }
+        - { key: cluster.name,           value: ${env:CLUSTER_NAME}, action: insert }
+    # PII redaction — drop or hash sensitive attributes at the edge.
+    attributes/redact:
+      actions:
+        - { key: http.request.header.authorization, action: delete }
+        - { key: http.request.header.cookie,        action: delete }
+        - { key: user.email,    action: hash }
+        - { key: user.phone,    action: hash }
+        - { key: user.ip,       action: hash }
+    # Tail sampling — keep all errors + slow traces + 5% baseline.
+    tail_sampling:
+      decision_wait: 10s
+      num_traces: 100000
+      policies:
+        - { name: errors, type: status_code, status_code: { status_codes: [ERROR] } }
+        - { name: slow,   type: latency,     latency:     { threshold_ms: 500 } }
+        - { name: rate,   type: probabilistic, probabilistic: { sampling_percentage: 5 } }
+  exporters:
+    otlphttp/tempo:        { endpoint: http://tempo-distributor.observability:4318 }
+    prometheusremotewrite: { endpoint: http://mimir-distributor.observability:9009/api/v1/push, resource_to_telemetry_conversion: { enabled: true } }
+    loki:                  { endpoint: http://loki-gateway.observability/loki/api/v1/push }
+  service:
+    telemetry:
+      metrics: { address: 0.0.0.0:8888 }
+      logs:    { level: info, encoding: json }
+    pipelines:
+      traces:  { receivers: [otlp], processors: [memory_limiter, attributes/redact, tail_sampling, resource, batch], exporters: [otlphttp/tempo] }
+      metrics: { receivers: [otlp], processors: [memory_limiter, resource, batch], exporters: [prometheusremotewrite] }
+      logs:    { receivers: [otlp], processors: [memory_limiter, attributes/redact, resource, batch], exporters: [loki] }
+
+extraEnvs:
+  - { name: CLUSTER_ENV,   value: prod }
+  - { name: CLOUD_REGION,  value: us-east-1 }
+  - { name: CLUSTER_NAME,  value: prod-use1 }

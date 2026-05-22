@@ -1,0 +1,24 @@
+name: {{service_name}}
+team: {{team}}
+image:
+  repository: registry.acme.io/{{service_name}}
+replicaCount: 3
+service: { port: 80, targetPort: 8080 }
+# Spring Boot Actuator probe paths (override the library defaults).
+probes:
+  startup:   { httpGet: { path: /actuator/health/liveness,  port: http }, failureThreshold: 30, periodSeconds: 5 }
+  liveness:  { httpGet: { path: /actuator/health/liveness,  port: http }, periodSeconds: 10, failureThreshold: 3 }
+  readiness: { httpGet: { path: /actuator/health/readiness, port: http }, periodSeconds: 5,  failureThreshold: 3 }
+slos:
+  enabled: true
+  objectives:
+    - name: requests-availability
+      objective: 99.95
+      sli:
+        errorQuery: 'sum(rate(http_server_requests_seconds_count{application="{{service_name}}",outcome="SERVER_ERROR"}[5m]))'
+        totalQuery: 'sum(rate(http_server_requests_seconds_count{application="{{service_name}}"}[5m]))'
+otel:
+  enabled: true
+  sdk: auto
+serviceMonitor:
+  path: /actuator/prometheus

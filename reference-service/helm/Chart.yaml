@@ -1,0 +1,10 @@
+apiVersion: v2
+name: reference-service
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+description: Paved-road reference service.
+dependencies:
+  - name: acme-platform-lib
+    version: "1.0.0"
+    repository: "file://../../platform/helm-library"

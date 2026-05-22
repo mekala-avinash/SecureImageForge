@@ -1,0 +1,198 @@
+# Reusable GitHub Actions workflow.
+# Service repos call this via `uses: acme/platform/.github/workflows/reusable-build.yml@main`.
+#
+# Produces:
+#   - multi-arch image (amd64 + arm64) with reproducible timestamps
+#   - SBOM (SPDX + CycloneDX) attached
+#   - SLSA L3 provenance attached (via slsa-github-generator)
+#   - Cosign keyless signature (Fulcio OIDC) + Rekor log
+#   - SARIF uploaded to GitHub Security tab
+#   - GitOps PR bumping the digest in acme/gitops
+name: reusable-build
+on:
+  workflow_call:
+    inputs:
+      service-name:    { required: true,  type: string }
+      runtime:         { required: true,  type: string } # python | nodejs | go | java | ruby | php | dotnet | rust
+      registry:        { required: false, type: string, default: "registry.acme.io" }
+      gitops-repo:     { required: false, type: string, default: "acme/gitops" }
+      gitops-env:      { required: false, type: string, default: "staging" }
+      platforms:       { required: false, type: string, default: "linux/amd64,linux/arm64" }
+    secrets:
+      gitops-token:    { required: true }    # PAT with write access to gitops repo
+permissions:
+  contents: read
+  id-token: write             # OIDC for Cosign keyless + cloud auth
+  packages: write
+  attestations: write
+  security-events: write
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_REPO: ${{ inputs.registry }}/${{ inputs.service-name }}
+
+jobs:
+  pre-flight:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Signed-commits enforcement
+        uses: sigstore/gitsign-verify@v0
+        continue-on-error: true       # warn-only in pre-flight; enforced by branch protection
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+      - name: SAST (Semgrep)
+        uses: semgrep/semgrep-action@v1
+        with: { config: "p/owasp-top-ten p/r2c-security-audit" }
+      - name: SCA (OSV-scanner)
+        uses: google/osv-scanner-action/.github/actions/osv-scanner-action@v2
+        with: { scan-args: "-r ." }
+      - name: Dockerfile lint
+        uses: hadolint/hadolint-action@v3.1.0
+        with: { dockerfile: Dockerfile }
+
+  build:
+    needs: pre-flight
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+        with: { driver-opts: image=moby/buildkit:v0.16.0 }
+      - name: Login to registry (OIDC → ECR mirror)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT }}:role/gha-build
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Build & push (multi-arch + provenance + SBOM)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ inputs.platforms }}
+          push: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            SERVICE_NAME=${{ inputs.service-name }}
+            VERSION=${{ github.sha }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache
+          cache-to:   type=registry,ref=${{ env.IMAGE_REPO }}:buildcache,mode=max
+          tags: ${{ env.IMAGE_REPO }}:${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE_REPO }},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true
+
+  scan:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE_REPO }}@${{ needs.build.outputs.digest }}
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          format: sarif
+          output: trivy.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        with: { sarif_file: trivy.sarif }
+
+  sign-attest:
+    needs: [build, scan]
+    runs-on: ubuntu-24.04
+    permissions: { id-token: write, contents: read, packages: write }
+    env:
+      COSIGN_EXPERIMENTAL: "1"
+    steps:
+      - uses: sigstore/cosign-installer@v3
+      - name: Cosign sign (keyless)
+        run: cosign sign --yes ${{ env.IMAGE_REPO }}@${{ needs.build.outputs.digest }}
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE_REPO }}@${{ needs.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - name: Attest SBOM
+        run: |
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json \
+            ${{ env.IMAGE_REPO }}@${{ needs.build.outputs.digest }}
+      - name: Verify Cosign signature (rekor)
+        run: |
+          cosign verify ${{ env.IMAGE_REPO }}@${{ needs.build.outputs.digest }} \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository_owner }}/.+" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+  helm-validate:
+    needs: pre-flight
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: yokawasa/action-setup-kube-tools@v0.11.2
+        with: { kubeconform: '0.6.7', kustomize: '5.5.0' }
+      - name: Helm dependency update + render
+        run: |
+          helm dependency update helm
+          helm template helm > /tmp/rendered.yaml
+      - name: Kubeconform strict
+        run: kubeconform -strict -summary < /tmp/rendered.yaml
+      - name: Kyverno policy check
+        uses: kyverno/action-install-cli@v0.2.0
+      - run: |
+          kyverno apply ${{ github.workspace }}/security/kyverno --resource /tmp/rendered.yaml || true
+        continue-on-error: true
+
+  grype-scan:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: anchore/scan-action@v5
+        with:
+          image: ${{ env.IMAGE_REPO }}@${{ needs.build.outputs.digest }}
+          fail-build: true
+          severity-cutoff: high
+
+  slsa-provenance:
+    needs: [build]
+    permissions: { id-token: write, contents: read, packages: write, actions: read }
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.0.0
+    with:
+      image: ${{ format('{0}/{1}', inputs.registry, inputs.service-name) }}
+      digest: ${{ needs.build.outputs.digest }}
+      registry-username: ${{ vars.ECR_USER }}
+    secrets:
+      registry-password: ${{ secrets.ECR_PASS }}
+
+  gitops-bump:
+    needs: [sign-attest, slsa-provenance]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops-repo }}
+          token: ${{ secrets.gitops-token }}
+      - name: Bump image digest in env overlay
+        run: |
+          set -eu
+          file="apps/${{ inputs.service-name }}/overlays/${{ inputs.gitops-env }}/values.yaml"
+          yq -i ".image.digest = \"${{ needs.build.outputs.digest }}\"" "$file"
+          yq -i ".image.tag    = \"${{ github.sha }}\"" "$file"
+      - uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bump/${{ inputs.service-name }}-${{ github.sha }}
+          commit-message: "chore(${{ inputs.service-name }}): bump ${{ inputs.gitops-env }} → ${{ needs.build.outputs.digest }}"
+          title: "Bump ${{ inputs.service-name }} (${{ inputs.gitops-env }}) → ${{ github.sha }}"
+          body: |
+            Auto-promotion to `${{ inputs.gitops-env }}`.
+            - Image: `${{ env.IMAGE_REPO }}@${{ needs.build.outputs.digest }}`
+            - SLSA L3 provenance + SBOM attested
+            - Cosign signature verified (Rekor entry will be enforced at admission)
+          token: ${{ secrets.gitops-token }}

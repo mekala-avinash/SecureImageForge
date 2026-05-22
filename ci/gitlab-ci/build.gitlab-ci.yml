@@ -1,0 +1,100 @@
+# Reusable GitLab CI template — equivalent of GitHub reusable-build.yml.
+# Service repos `include:` this and override variables.
+#
+# Usage in a service repo .gitlab-ci.yml:
+#   include:
+#     - project: acme/platform
+#       file: /ci/gitlab-ci/build.gitlab-ci.yml
+#       ref: main
+#   variables:
+#     SERVICE_NAME: orders-api
+#     RUNTIME: python
+
+stages: [pre-flight, build, scan, sign-attest, gitops]
+
+variables:
+  IMAGE_REPO: registry.acme.io/${SERVICE_NAME}
+  DOCKER_BUILDKIT: "1"
+  BUILDKIT_INLINE_CACHE: "1"
+
+.default_runner: &default_runner
+  image: registry.acme.io/tooling/multi:1.0.0
+  tags: [hardened-runner]
+  interruptible: true
+
+secret-scan:
+  <<: *default_runner
+  stage: pre-flight
+  script: ["gitleaks detect --source . --redact --exit-code 1"]
+
+sast:
+  <<: *default_runner
+  stage: pre-flight
+  script: ["semgrep ci --config p/owasp-top-ten --error"]
+
+sca:
+  <<: *default_runner
+  stage: pre-flight
+  script: ["osv-scanner -r . --fail-on-vuln"]
+
+dockerfile-lint:
+  <<: *default_runner
+  stage: pre-flight
+  script: ["hadolint Dockerfile"]
+  rules: [{ exists: ["Dockerfile"] }]
+
+build:
+  <<: *default_runner
+  stage: build
+  id_tokens: { SIGSTORE_ID_TOKEN: { aud: sigstore } }
+  script:
+    - export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+    - export BUILD_DATE=$(date -u --iso-8601=seconds -d "@${SOURCE_DATE_EPOCH}")
+    - >
+      buildctl-daemonless.sh build
+      --frontend dockerfile.v0
+      --local context=. --local dockerfile=.
+      --opt platform=linux/amd64,linux/arm64
+      --opt build-arg:SERVICE_NAME=${SERVICE_NAME}
+      --opt build-arg:VERSION=${CI_COMMIT_SHA}
+      --opt build-arg:VCS_REF=${CI_COMMIT_SHA}
+      --opt build-arg:BUILD_DATE=${BUILD_DATE}
+      --output type=image,name=${IMAGE_REPO}:${CI_COMMIT_SHA},push=true,rewrite-timestamp=true
+    - echo "DIGEST=$(crane digest ${IMAGE_REPO}:${CI_COMMIT_SHA})" > build.env
+  artifacts: { reports: { dotenv: build.env } }
+
+scan:
+  <<: *default_runner
+  stage: scan
+  needs: [build]
+  script:
+    - trivy image --severity CRITICAL,HIGH --exit-code 1 ${IMAGE_REPO}@${DIGEST}
+    - grype ${IMAGE_REPO}@${DIGEST} --fail-on high
+    - syft ${IMAGE_REPO}@${DIGEST} -o spdx-json > sbom.spdx.json
+  artifacts: { paths: [sbom.spdx.json] }
+
+sign-attest:
+  <<: *default_runner
+  stage: sign-attest
+  needs: [build, scan]
+  id_tokens: { SIGSTORE_ID_TOKEN: { aud: sigstore } }
+  script:
+    - export COSIGN_EXPERIMENTAL=1
+    - cosign sign --yes ${IMAGE_REPO}@${DIGEST}
+    - cosign attest --yes --type spdxjson --predicate sbom.spdx.json ${IMAGE_REPO}@${DIGEST}
+    - cosign verify ${IMAGE_REPO}@${DIGEST}
+        --certificate-identity-regexp "^${CI_PROJECT_URL}.+"
+        --certificate-oidc-issuer ${CI_SERVER_URL}
+
+gitops-bump:
+  <<: *default_runner
+  stage: gitops
+  needs: [sign-attest]
+  variables: { GITOPS_ENV: staging }
+  script:
+    - git clone --depth 1 https://oauth2:${GITOPS_TOKEN}@gitlab.acme.io/platform/gitops.git
+    - cd gitops
+    - yq -i ".image.digest = \"${DIGEST}\""        apps/${SERVICE_NAME}/overlays/${GITOPS_ENV}/values.yaml
+    - yq -i ".image.tag    = \"${CI_COMMIT_SHA}\"" apps/${SERVICE_NAME}/overlays/${GITOPS_ENV}/values.yaml
+    - git -c user.email=ci@acme.io -c user.name="ACME CI" commit -am "chore(${SERVICE_NAME}): bump ${GITOPS_ENV} → ${DIGEST}"
+    - git push -o merge_request.create -o merge_request.target=main
