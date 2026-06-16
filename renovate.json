@@ -1,0 +1,93 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    "schedule:weekly",
+    "group:allNonMajor",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "labels": ["dependencies", "renovate"],
+  "dependencyDashboard": true,
+  "dependencyDashboardTitle": "Renovate Dashboard",
+  "platformAutomerge": true,
+  "rebaseWhen": "behind-base-branch",
+  "prHourlyLimit": 10,
+  "prConcurrentLimit": 25,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security", "vulnerability"]
+  },
+  "osvVulnerabilityAlerts": true,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 4am on monday"],
+    "automerge": true,
+    "automergeType": "branch"
+  },
+  "packageRules": [
+    {
+      "description": "Auto-merge security patches (any package) when CI passes.",
+      "matchUpdateTypes": ["patch", "pin", "digest"],
+      "matchCurrentVersion": "!/^0/",
+      "vulnerabilityAlerts": true,
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
+      "labels": ["security", "automerge"]
+    },
+    {
+      "description": "Group OpenTelemetry across all ecosystems.",
+      "matchPackagePatterns": ["^opentelemetry", "^@opentelemetry", "^io\\.opentelemetry"],
+      "groupName": "opentelemetry"
+    },
+    {
+      "description": "Group all GitHub Actions bumps.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "pinDigests": true
+    },
+    {
+      "description": "Pin Docker base-image tags to digests.",
+      "matchDatasources": ["docker"],
+      "pinDigests": true
+    },
+    {
+      "description": "Auto-merge minor + patch for OTel + observability libs.",
+      "matchPackagePatterns": ["^opentelemetry", "^@opentelemetry", "^prom-client", "^prometheus-client", "^pino", "^micrometer"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "automergeStrategy": "squash"
+    },
+    {
+      "description": "Hold major bumps for human review.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["major-upgrade", "needs-review"]
+    },
+    {
+      "description": "Hardened base images: ensure pinned-digest only, no floating tags.",
+      "matchPackagePatterns": ["cgr.dev/chainguard/.*"],
+      "pinDigests": true,
+      "automerge": true,
+      "automergeStrategy": "squash"
+    }
+  ],
+  "regexManagers": [
+    {
+      "description": "Bump the Helm library version pinned in scaffolder Chart.yaml files.",
+      "fileMatch": ["(^|/)Chart\\.yaml$"],
+      "matchStrings": [
+        "name:\\s+acme-platform-lib\\s+\\n\\s+version:\\s+\"?(?<currentValue>[^\"\\s]+)"
+      ],
+      "depNameTemplate": "acme-platform-lib",
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://charts.acme.io"
+    }
+  ],
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/vendor/**",
+    "**/.git/**"
+  ]
+}

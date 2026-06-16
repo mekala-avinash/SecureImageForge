@@ -1,0 +1,85 @@
+# End-to-end smoke test running on a real Ubuntu runner with Docker.
+# This is what proves the paved-road validate-e2e.sh works against a live kind cluster + ArgoCD.
+name: e2e-paved-road
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/validate-e2e.sh'
+      - 'scripts/validate-*.sh'
+      - 'templates/backstage-scaffolder/**'
+      - 'developer-experience/pavedroad-cli/**'
+      - 'gitops-bootstrap/gitops/**'
+      - '.github/workflows/e2e.yml'
+  pull_request:
+    paths:
+      - 'scripts/validate-*.sh'
+      - 'templates/backstage-scaffolder/**'
+      - 'developer-experience/pavedroad-cli/**'
+      - 'gitops-bootstrap/gitops/**'
+  schedule:
+    - cron: '0 4 * * *'             # nightly drift detection
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-static:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install paved-road tooling
+        run: |
+          pip install -q pyyaml pip-tools
+          pip install -q -e ./developer-experience/pavedroad-cli
+          # kustomize
+          curl -sSLO https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.5.0/kustomize_v5.5.0_linux_amd64.tar.gz
+          tar xzf kustomize_v5.5.0_linux_amd64.tar.gz && sudo mv kustomize /usr/local/bin/
+          # kubeconform
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar -xz
+          sudo mv kubeconform /usr/local/bin/
+      - name: Reference-service pytest
+        run: |
+          pip install -q -r reference-service/requirements.txt
+          cd reference-service && PYTHONPATH=src python -m pytest tests/ -q
+      - name: pavedroad CLI pytest
+        run: cd developer-experience/pavedroad-cli && python -m pytest tests/ -q
+      - name: validate-cli.sh
+        run: ./scripts/validate-cli.sh
+      - name: validate-argocd.sh
+        run: ./scripts/validate-argocd.sh
+
+  validate-live:
+    needs: validate-static
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: pavedroad-e2e
+          version: v0.25.0
+          kubectl_version: v1.31.4
+      - uses: azure/setup-helm@v4
+        with: { version: v3.16.3 }
+      - name: Install paved-road CLI
+        run: pip install -q -e ./developer-experience/pavedroad-cli
+      - name: validate-e2e.sh (kind + ArgoCD core + scaffold + apply)
+        env:
+          CLUSTER: pavedroad-e2e
+          KEEP: '0'
+        run: ./scripts/validate-e2e.sh
+      - name: kubectl debug bundle (on failure)
+        if: failure()
+        run: |
+          kubectl --context kind-pavedroad-e2e get all -A
+          kubectl --context kind-pavedroad-e2e -n argocd logs deploy/argocd-repo-server --tail=200 || true
+          kubectl --context kind-pavedroad-e2e -n argocd describe pods || true

@@ -1,0 +1,34 @@
+name: renovate
+on:
+  schedule:
+    - cron: '0 * * * *'              # hourly, respects renovate.json schedules
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['renovate.json', '.github/workflows/renovate.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
+jobs:
+  renovate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Self-hosted Renovate
+        uses: renovatebot/github-action@v41.0.13
+        with:
+          configurationFile: renovate.json
+          token: ${{ secrets.RENOVATE_TOKEN }}
+          renovate-version: 39.146.0
+        env:
+          # Auto-merge: only allow Renovate to merge when CI passes (the merge
+          # itself is gated by branch protection requiring all required checks).
+          RENOVATE_PLATFORM_AUTOMERGE: 'true'
+          RENOVATE_AUTO_DISCOVER: 'false'
+          RENOVATE_REPOSITORIES: '["acme/platform","acme/gitops"]'
+          LOG_LEVEL: info

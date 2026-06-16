@@ -109,6 +109,21 @@ Complete — documentation deliverable. No application code was modified.
     tests for the CLI under `developer-experience/pavedroad-cli/tests/test_cli.py`
     (all pass).
 
+- 2026-02: **Action-items follow-up (e2e CI + secrets + Renovate)**:
+  - **e2e CI workflow**: `/app/.github/workflows/e2e.yml` runs `validate-cli.sh`,
+    `validate-argocd.sh`, pytest (reference-service + CLI), AND a live job that
+    spins up `kind` + ArgoCD core + scaffolds a service via the CLI and applies
+    it. Nightly cron + on-PR + manual dispatch.
+  - **Platform secrets configurator**: `/app/scripts/configure-platform-secrets.sh`
+    (idempotent `gh secret/variable set`) + `.platform-secrets.env.example` +
+    `/app/docs/platform-secrets.md` (catalog of all required values and OIDC
+    migration guide). `.gitignore` updated to prevent committing populated env.
+  - **Renovate**: `/app/renovate.json` (group OTel, pin Docker digests, auto-merge
+    security patches + lockfile maintenance, hold majors for review) +
+    `/app/.github/workflows/renovate.yml` (hourly self-hosted action across
+    `acme/platform` and `acme/gitops`). Each scaffolder skeleton now ships its
+    own `renovate.json` that extends the platform's config.
+
 ## Next Actions
 - Day 0: Send kickoff comms (Slack + email + run all-hands).
 - Day 1: Open the 4 ATS requisitions using the JDs.
