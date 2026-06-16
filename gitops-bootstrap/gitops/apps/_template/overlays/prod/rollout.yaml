@@ -1,0 +1,62 @@
+# Argo Rollouts progressive delivery — canary with Prometheus analysis.
+# The acme.workload library template emits this Rollout when values.kind=rollout.
+# This file supplements with an AnalysisTemplate that the canary references.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: SERVICE_NAME-canary-success-rate
+spec:
+  args:
+    - name: service-name
+      value: SERVICE_NAME
+    - name: namespace
+      value: SERVICE_NAME-prod
+  metrics:
+    - name: success-rate
+      interval: 30s
+      successCondition: result[0] >= 0.995          # 99.5% non-5xx
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: http://prometheus.observability:9090
+          query: |
+            sum(rate(http_requests_total{job="{{args.service-name}}",code!~"5.."}[2m]))
+              /
+            sum(rate(http_requests_total{job="{{args.service-name}}"}[2m]))
+    - name: p99-latency-seconds
+      interval: 30s
+      successCondition: result[0] <= 0.250          # p99 ≤ 250 ms
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: http://prometheus.observability:9090
+          query: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket{job="{{args.service-name}}"}[2m])) by (le)
+            )
+---
+# Rollout overrides patched into the workload emitted by acme-platform-lib.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: SERVICE_NAME            # name aligned with chart fullname
+spec:
+  strategy:
+    canary:
+      steps:
+        - setWeight: 10
+        - pause: { duration: 2m }
+        - analysis:
+            templates: [{ templateName: SERVICE_NAME-canary-success-rate }]
+        - setWeight: 25
+        - pause: { duration: 5m }
+        - setWeight: 50
+        - pause: { duration: 5m }
+        - setWeight: 100
+      maxSurge: "25%"
+      maxUnavailable: 0
+      trafficRouting:
+        istio:
+          virtualService:
+            name: SERVICE_NAME
+            routes: [primary]

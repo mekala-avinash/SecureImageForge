@@ -233,13 +233,18 @@ def status(
         return
 
     t = Table(title=f"pavedroad status — {service}@{env}")
-    t.add_column("Key"); t.add_column("Value")
+    t.add_column("Key")
+    t.add_column("Value")
     if "argocd" in out:
-        for k, v in out["argocd"].items(): t.add_row(f"argocd.{k}", str(v))
+        for k, v in out["argocd"].items():
+            t.add_row(f"argocd.{k}", str(v))
     if "deployment" in out:
-        for k, v in out["deployment"].items(): t.add_row(f"deployment.{k}", str(v))
-    if "argocd_error" in out:    t.add_row("argocd",     f"[red]{out['argocd_error']}[/red]")
-    if "deployment_error" in out: t.add_row("deployment", f"[red]{out['deployment_error']}[/red]")
+        for k, v in out["deployment"].items():
+            t.add_row(f"deployment.{k}", str(v))
+    if "argocd_error" in out:
+        t.add_row("argocd", f"[red]{out['argocd_error']}[/red]")
+    if "deployment_error" in out:
+        t.add_row("deployment", f"[red]{out['deployment_error']}[/red]")
     console.print(t)
 
 
@@ -256,7 +261,7 @@ def sync(
         console.print(f"[yellow]DRY RUN[/yellow] would `argocd app sync {app_name}` (set ACME_LIVE=1 to actually sync).")
         return
     res = argo.sync_app(app_name, prune=prune)
-    console.print(f"[green]✓[/green] sync triggered for {app_name}")
+    console.print(f"[green]✓[/green] sync triggered for {app_name} (raw: {res})")
     if wait:
         s = argo.wait_synced(app_name)
         console.print(f"[green]✓[/green] {app_name} → sync={s.sync} health={s.health} rev={s.revision[:8]}")

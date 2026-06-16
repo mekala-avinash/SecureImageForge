@@ -1,0 +1,42 @@
+# Bootstrap namespaces for the platform itself.
+# Each downstream tenant namespace is created by the service's base/namespace.yaml
+# via Kustomize at sync time (see apps/_template/base/namespace.yaml).
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: argocd
+      labels:
+        paved-road: "true"
+        pod-security.kubernetes.io/enforce: privileged   # ArgoCD needs higher caps
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: kyverno
+      labels:
+        paved-road: "true"
+        pod-security.kubernetes.io/enforce: privileged
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: observability
+      labels:
+        paved-road: "true"
+        pod-security.kubernetes.io/enforce: baseline
+        istio-injection: enabled
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: cert-manager
+      labels:
+        paved-road: "true"
+        pod-security.kubernetes.io/enforce: baseline
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: secrets-store-csi-driver
+      labels:
+        paved-road: "true"
+        pod-security.kubernetes.io/enforce: privileged

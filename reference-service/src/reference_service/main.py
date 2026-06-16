@@ -9,7 +9,11 @@ Endpoints:
 """
 from __future__ import annotations
 
-import json, logging, os, sys, time
+import json
+import logging
+import os
+import sys
+import time
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
@@ -38,7 +42,8 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(out)
 
 
-h = logging.StreamHandler(sys.stdout); h.setFormatter(JsonFormatter())
+h = logging.StreamHandler(sys.stdout)
+h.setFormatter(JsonFormatter())
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), handlers=[h], force=True)
 log = logging.getLogger("reference_service")
 
@@ -61,7 +66,8 @@ async def _metrics_mw(request, call_next):
 
 
 @app.get("/healthz")
-async def healthz(): return JSONResponse({"ok": True})
+async def healthz():
+    return JSONResponse({"ok": True})
 
 
 @app.get("/ready")
@@ -82,13 +88,15 @@ class Item(BaseModel):
 
 @app.get("/api/v1/items")
 async def list_items():
-    log.info("listing items"); return {"items": list(ITEMS.values())}
+    log.info("listing items")
+    return {"items": list(ITEMS.values())}
 
 
 @app.get("/api/v1/items/{item_id}")
 async def get_item(item_id: int):
     item = ITEMS.get(item_id)
-    if not item: raise HTTPException(status_code=404, detail="not found")
+    if not item:
+        raise HTTPException(status_code=404, detail="not found")
     return item
 
 

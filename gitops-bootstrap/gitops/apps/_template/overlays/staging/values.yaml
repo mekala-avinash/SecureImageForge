@@ -1,0 +1,11 @@
+replicaCount: 3
+image:
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  tag: staging
+env:
+  - { name: LOG_LEVEL, value: info }
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:                { memory: 512Mi }
+slos:
+  enabled: true

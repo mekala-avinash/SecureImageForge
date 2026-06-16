@@ -1,0 +1,13 @@
+# Dev overlay — minimal replicas, debug logs, no rollout strategy.
+replicaCount: 1
+image:
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  tag: dev
+env:
+  - { name: LOG_LEVEL, value: debug }
+resources:
+  requests: { cpu: 50m,  memory: 128Mi }
+  limits:                # cpu intentionally unlimited; memory required.
+    memory: 256Mi
+slos:
+  enabled: false

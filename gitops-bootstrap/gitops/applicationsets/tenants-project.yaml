@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tenants
+  namespace: argocd
+spec:
+  description: All tenant-owned services on the paved road.
+  sourceRepos:
+    - https://github.com/acme/gitops
+    - https://github.com/acme/*
+  destinations:
+    - { server: https://kubernetes.default.svc, namespace: '*-dev' }
+    - { server: https://kubernetes.default.svc, namespace: '*-staging' }
+    - { server: https://prod-use1.acme.io,      namespace: '*-prod' }
+  clusterResourceWhitelist:
+    - { group: '',                       kind: Namespace }
+    - { group: networking.k8s.io,        kind: NetworkPolicy }
+    - { group: rbac.authorization.k8s.io, kind: ClusterRole }
+    - { group: rbac.authorization.k8s.io, kind: ClusterRoleBinding }
+  namespaceResourceBlacklist:
+    - { group: '', kind: ResourceQuota }
+    - { group: '', kind: LimitRange }
+  roles:
+    - name: developer
+      policies:
+        - p, proj:tenants:developer, applications, sync,    tenants/*-dev, allow
+        - p, proj:tenants:developer, applications, sync,    tenants/*-staging, allow
+        - p, proj:tenants:developer, applications, get,     tenants/*, allow
+        - p, proj:tenants:developer, applications, action/*, tenants/*-prod, deny
+      groups: [acme:engineering]
+    - name: release-manager
+      policies:
+        - p, proj:tenants:release-manager, applications, *, tenants/*, allow
+      groups: [acme:release-managers]

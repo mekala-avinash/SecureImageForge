@@ -71,6 +71,44 @@ Complete — documentation deliverable. No application code was modified.
   - `platform-repo/` (acme/platform): README, CODEOWNERS, layout for modules/crossplane/helm-charts
   - `tenants-repo/` (acme/tenants): README, CODEOWNERS, layout for per-tenant overlays
 
+## Updates
+- 2026-02: **Paved-road v1.1 delivered (Option D)** — full executable expansion:
+  - **Dependency hygiene**: pinned `requirements.txt` for the Python templates +
+    reference service, generated `requirements.lock` with `pip-compile --generate-hashes`,
+    documented full dependency-update strategy at `/app/docs/dependency-update-strategy.md`
+    (Renovate + lockfile maintenance + SBOM + vuln-scan hooks).
+  - **3 new Backstage scaffolders**: `go-gin/`, `nodejs-express/`, `java-springboot/`
+    under `/app/templates/backstage-scaffolder/`. Each ships with: Dockerfile (hardened
+    distroless), Makefile, Helm chart wiring the platform library, GitHub Actions +
+    GitLab CI + Azure DevOps pipelines, OTel instrumentation, Prometheus metrics,
+    structured JSON logs with trace correlation, graceful shutdown, zod/pydantic/
+    `application.yml` config validation, smoke tests.
+  - **CLI v1.1**: `pavedroad` extended with real Kubernetes (`k8s.py`) + ArgoCD
+    (`argocd.py`) adapters. New commands: `status`, `sync`, `ns bootstrap`; existing
+    `watch` and `rollback` upgraded to call the live ArgoCD API or `argocd` CLI.
+    Languages: `python`, `go`, `nodejs`, `java`.
+  - **Azure DevOps pipeline**: `/app/ci/azure-devops/build.yml` (pre-flight, build,
+    scan, sign+attest, helm validate, kyverno policy check, GitOps PR).
+  - **GitHub Actions reusable** enhanced with helm validate (`kubeconform`), Kyverno
+    policy check, Grype scan job, Cosign verify step.
+  - **GitOps assets** (`/app/gitops-bootstrap/gitops/`):
+    - `apps/_template/{base,overlays/{dev,staging,prod}}` — Kustomize overlays per env,
+      ArgoCD Application, SecretProviderClass binding to Vault, prod canary Rollout +
+      Prometheus AnalysisTemplate.
+    - `applicationsets/services.yaml` + `tenants-project.yaml` — auto-generates an
+      Argo CD Application for every `apps/<svc>/overlays/<env>` combination.
+    - `bootstrap/platform-namespaces.yaml` — PSS-labelled platform namespaces.
+    - `bootstrap/secrets-pattern.md` — Vault → CSI → optional K8s Secret mirror flow.
+  - **Validation scripts** (`/app/scripts/`):
+    - `validate-cli.sh` — scaffolds all 4 languages, checks structure, `doctor` pass.
+    - `validate-argocd.sh` — parses ApplicationSet/AppProject, `kustomize build` overlays.
+    - `validate-helm.sh` — renders every chart with `helm template` + `kubeconform`.
+    - `validate-e2e.sh` — kind + ArgoCD core install + scaffold + apply smoke test.
+  - **Quickstart**: `/app/QUICKSTART.md` — 15-minute onboarding from scaffold to prod.
+  - **Tests**: 4 pytest tests for the reference service (all pass); 6 new pytest
+    tests for the CLI under `developer-experience/pavedroad-cli/tests/test_cli.py`
+    (all pass).
+
 ## Next Actions
 - Day 0: Send kickoff comms (Slack + email + run all-hands).
 - Day 1: Open the 4 ATS requisitions using the JDs.

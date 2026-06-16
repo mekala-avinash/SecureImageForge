@@ -1,0 +1,70 @@
+# ApplicationSet — auto-generates Argo CD Applications for every service+env combo
+# by walking apps/<service>/overlays/<env>/ in the gitops repo.
+#
+# Adding a new service requires no Argo CD config: drop the service folder into
+# apps/, push, and the ApplicationSet generator picks it up on the next reconcile.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: services
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: [missingkey=error]
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: https://github.com/acme/gitops
+              revision: HEAD
+              directories:
+                - path: apps/*
+                - path: apps/_template
+                  exclude: true
+          - list:
+              elements:
+                - env: dev
+                  cluster: in-cluster
+                  server: https://kubernetes.default.svc
+                  autoSyncSelfHeal: true
+                - env: staging
+                  cluster: in-cluster
+                  server: https://kubernetes.default.svc
+                  autoSyncSelfHeal: true
+                - env: prod
+                  cluster: prod-use1
+                  server: https://prod-use1.acme.io
+                  autoSyncSelfHeal: false
+  template:
+    metadata:
+      name: '{{.path.basename}}-{{.env}}'
+      labels:
+        paved-road: "true"
+        service: '{{.path.basename}}'
+        env: '{{.env}}'
+    spec:
+      project: tenants
+      source:
+        repoURL: https://github.com/acme/gitops
+        targetRevision: HEAD
+        path: '{{.path.path}}/overlays/{{.env}}'
+        plugin:
+          name: kustomized-helm
+      destination:
+        server: '{{.server}}'
+        namespace: '{{.path.basename}}-{{.env}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: '{{.autoSyncSelfHeal}}'
+        syncOptions:
+          - ServerSideApply=true
+          - PruneLast=true
+          - RespectIgnoreDifferences=true
+        retry:
+          limit: 5
+          backoff: { duration: 10s, factor: 2, maxDuration: 5m }
+      ignoreDifferences:
+        - group: argoproj.io
+          kind: Rollout
+          jsonPointers: ["/spec/replicas"]            # HPA controls
