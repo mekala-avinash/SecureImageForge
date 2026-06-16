@@ -32,3 +32,11 @@ jobs:
           RENOVATE_AUTO_DISCOVER: 'false'
           RENOVATE_REPOSITORIES: '["acme/platform","acme/gitops"]'
           LOG_LEVEL: info
+      - name: Notify Slack on Renovate failure
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            --data "{\"text\":\":warning: *Renovate run failed* — see https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            "$SLACK_WEBHOOK_URL"

@@ -1,0 +1,46 @@
+# Repo-wide ruff configuration. Inherited by every Python package in the monorepo
+# unless an inner pyproject.toml [tool.ruff] section overrides it.
+
+target-version = "py311"
+line-length = 120
+extend-exclude = [
+  "**/.venv",
+  "**/node_modules",
+  "**/__pycache__",
+  "templates/backstage-scaffolder/*/skeleton/tests",  # rendered before lint
+]
+
+[lint]
+select = [
+  "E", "F", "W",          # pycodestyle + pyflakes
+  "I",                    # isort
+  "B",                    # flake8-bugbear
+  "ANN",                  # flake8-annotations (type hint coverage)
+  "C90",                  # mccabe complexity
+  "UP",                   # pyupgrade
+  "RUF",                  # ruff-specific
+  "PL",                   # pylint
+  "S",                    # flake8-bandit (security)
+]
+ignore = [
+  "ANN101", "ANN102",     # self/cls type hints not required
+  "ANN401",               # allow `Any` (FastAPI request signatures need it)
+  "PLR0913",              # >5 args — typer CLI commands exceed this legitimately
+  "S101",                 # asserts permitted in test files
+  "E501",                 # line length policed by formatter
+]
+
+[lint.mccabe]
+max-complexity = 10        # CI fails any function above this
+
+[lint.per-file-ignores]
+"**/tests/**"      = ["ANN", "S", "PLR2004"]
+"**/conftest.py"   = ["ANN"]
+"**/scripts/**"    = ["S"]
+
+[lint.pylint]
+max-args = 8
+
+[format]
+quote-style = "double"
+indent-style = "space"

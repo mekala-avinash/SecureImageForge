@@ -51,7 +51,7 @@ gh api "repos/$REPO" -q '.permissions.admin' 2>/dev/null | grep -qx true \
 
 REQUIRED_VARS=(AWS_ACCOUNT AWS_REGION ECR_USER)
 REQUIRED_SECRETS=(GITOPS_TOKEN ECR_PASS RENOVATE_TOKEN)
-OPTIONAL_SECRETS=(COSIGN_PASSWORD)
+OPTIONAL_SECRETS=(COSIGN_PASSWORD SLACK_WEBHOOK_URL)
 
 # Load sidecar env if present.
 if [ -f "$ENV_FILE" ]; then

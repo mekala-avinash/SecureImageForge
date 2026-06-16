@@ -1,6 +1,6 @@
 [project]
 name = "pavedroad-cli"
-version = "1.1.0"
+version = "1.2.0"
 description = "ACME paved-road developer CLI: scaffold, doctor, migrate, promote, watch."
 requires-python = ">=3.11"
 dependencies = [

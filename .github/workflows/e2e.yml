@@ -83,3 +83,27 @@ jobs:
           kubectl --context kind-pavedroad-e2e get all -A
           kubectl --context kind-pavedroad-e2e -n argocd logs deploy/argocd-repo-server --tail=200 || true
           kubectl --context kind-pavedroad-e2e -n argocd describe pods || true
+      - name: Notify Slack on failure
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            --data "$(jq -nc \
+              --arg run "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --arg sha "${{ github.sha }}" \
+              --arg branch "${{ github.ref_name }}" \
+              '{text: ":fire: *paved-road e2e failed*", attachments: [{color: "danger", fields: [
+                  {title: "Branch", value: $branch, short: true},
+                  {title: "SHA",    value: $sha,    short: true},
+                  {title: "Run",    value: $run,    short: false}
+              ]}]}')" \
+            "$SLACK_WEBHOOK_URL"
+      - name: Notify Slack on success (main only)
+        if: success() && github.ref == 'refs/heads/main' && env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            --data '{"text":":white_check_mark: paved-road e2e green on main"}' \
+            "$SLACK_WEBHOOK_URL"

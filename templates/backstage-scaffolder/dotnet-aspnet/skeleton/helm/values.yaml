@@ -1,0 +1,14 @@
+name: {{service_name}}
+team: {{team}}
+image: { repository: registry.acme.io/{{service_name}} }
+replicaCount: 3
+service: { port: 80, targetPort: 8080 }
+slos:
+  enabled: true
+  objectives:
+    - name: requests-availability
+      objective: 99.95
+      sli:
+        errorQuery: 'sum(rate(http_requests_received_total{job="{{service_name}}",code=~"5.."}[5m]))'
+        totalQuery: 'sum(rate(http_requests_received_total{job="{{service_name}}"}[5m]))'
+otel: { enabled: true, sdk: auto }

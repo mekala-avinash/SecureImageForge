@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-SUPPORTED: list[str] = ["python", "go", "nodejs", "java"]
+SUPPORTED: list[str] = ["python", "go", "nodejs", "java", "rust", "dotnet"]
 
 # Files every language scaffold must produce.
 COMMON_FILES: list[str] = [
@@ -32,6 +32,8 @@ LANGUAGE_ENTRYPOINT: dict[str, str] = {
     "go":     "cmd/server/main.go",
     "nodejs": "src/server.ts",
     "java":   "src/main/java/io/acme/Application.java",
+    "rust":   "src/main.rs",
+    "dotnet": "Program.cs",
 }
 
 PLACEHOLDER_TOKENS: tuple[str, ...] = ("{{service_name}}", "{{team}}", "{{language}}")
@@ -55,7 +57,7 @@ def _scaffold(lang: str, tmp_path: Path, name: str | None = None) -> Path:
 def test_version() -> None:
     out = _run("version").stdout
     assert "pavedroad" in out
-    assert "1.1.0" in out
+    assert "1.2.0" in out
 
 
 @pytest.mark.parametrize("lang", SUPPORTED)

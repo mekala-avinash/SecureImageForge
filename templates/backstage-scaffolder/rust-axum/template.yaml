@@ -1,0 +1,40 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: rust-axum-paved-road
+  title: Rust (axum) microservice (paved road)
+  description: Scaffold a new Rust axum service onto the ACME paved road.
+  tags: [recommended, rust, axum, paved-road]
+spec:
+  owner: group:platform-engineering
+  type: service
+  parameters:
+    - title: Service metadata
+      required: [name, team, description]
+      properties:
+        name:        { type: string, title: Service name, pattern: "^[a-z][a-z0-9-]{2,40}$" }
+        team:        { type: string, title: Owning team slug }
+        description: { type: string, title: One-line description }
+    - title: Repository
+      required: [repoUrl]
+      properties:
+        repoUrl: { type: string, ui:field: RepoUrlPicker, ui:options: { allowedHosts: [github.com] } }
+  steps:
+    - id: fetch
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values: { name: ${{ parameters.name }}, team: ${{ parameters.team }}, description: ${{ parameters.description }} }
+    - id: publish
+      action: publish:github
+      input:
+        allowedHosts: [github.com]
+        description: ${{ parameters.description }}
+        repoUrl: ${{ parameters.repoUrl }}
+        defaultBranch: main
+        protectDefaultBranch: true
+    - id: register
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps.publish.output.repoContentsUrl }}
+        catalogInfoPath: /catalog-info.yaml

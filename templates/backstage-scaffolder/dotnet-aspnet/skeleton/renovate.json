@@ -1,0 +1,9 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "local>acme/platform//renovate.json", ":semanticCommits", "schedule:weekly"],
+  "labels": ["dependencies"],
+  "vulnerabilityAlerts": { "enabled": true, "labels": ["security"] },
+  "packageRules": [
+    { "matchUpdateTypes": ["patch", "pin", "digest"], "vulnerabilityAlerts": true, "automerge": true, "automergeStrategy": "squash" }
+  ]
+}

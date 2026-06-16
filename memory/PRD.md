@@ -137,6 +137,32 @@ Complete — documentation deliverable. No application code was modified.
     "Save to GitHub" push flow, Renovate App install + branch protection, and
     a final sanity-check PR procedure. Includes OIDC migration follow-on.
 
+- 2026-02: **Autonomous backlog clearance — paved-road v1.2**:
+  - **`.ruff.toml`** at repo root: enforces ANN (type hints), C901 (complexity ≤ 10),
+    PL, S (bandit), I, B, UP, RUF across the monorepo.
+  - **AWS IAM GitHub-OIDC module** at `/app/infra/modules/iam-github-oidc/`
+    (main.tf + variables.tf + README). Replaces long-lived `ECR_PASS` /
+    `GITOPS_TOKEN` secrets with STS short-lived tokens; scoped to `acme/*`
+    repos with auditable trust policy.
+  - **Rust (axum) scaffolder** at `/app/templates/backstage-scaffolder/rust-axum/`
+    and **.NET 9 (ASP.NET Core) scaffolder** at `dotnet-aspnet/` — each with
+    Dockerfile, Helm chart, GH Actions/GitLab/Azure DevOps pipelines, OTel,
+    Prometheus, JSON logs (tracing-subscriber / Serilog), graceful shutdown.
+    Hardened base Dockerfiles also added under `/app/images/runtimes/{rust,dotnet}/`.
+  - **`pavedroad demo`** command (CLI v1.2.0) — one-liner wrapper around
+    `validate-e2e.sh`.
+  - **README badge wall**: e2e status, Renovate, open-CVE count, OSSF
+    Scorecard, SLSA L3, Cosign keyless, 6-language scaffolders, license.
+  - **Slack notifications** wired into `e2e.yml` (failure + main-branch success)
+    and `renovate.yml` (failure). Webhook URL added to secrets configurator
+    as `SLACK_WEBHOOK_URL` (optional).
+  - **`validate-cli.sh`** extended to test all 6 languages.
+  - **Tests** (all green):
+    - reference-service: 4/4
+    - pavedroad CLI: 68/68 (added rust + dotnet matrix coverage)
+    - validate-cli + validate-argocd: pass
+    - 0 ruff blocking issues
+
 ## Next Actions
 - Day 0: Send kickoff comms (Slack + email + run all-hands).
 - Day 1: Open the 4 ATS requisitions using the JDs.

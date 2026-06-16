@@ -1,5 +1,14 @@
 # ACME Paved Road — Implementation Monorepo
 
+[![e2e](https://github.com/acme/platform/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/acme/platform/actions/workflows/e2e.yml)
+[![Renovate](https://img.shields.io/badge/renovate-enabled-brightgreen?logo=renovatebot)](https://github.com/acme/platform/issues?q=is%3Aissue+label%3Adependencies)
+[![Dependabot Updates](https://img.shields.io/github/issues-search/acme/platform?query=label%3Asecurity+is%3Aopen&label=open+CVEs&color=critical)](https://github.com/acme/platform/issues?q=is%3Aissue+label%3Asecurity)
+[![Scorecard](https://api.securityscorecards.dev/projects/github.com/acme/platform/badge)](https://securityscorecards.dev/viewer/?uri=github.com/acme/platform)
+[![SLSA L3](https://slsa.dev/images/gh-badge-level3.svg)](https://slsa.dev)
+[![Cosign signed](https://img.shields.io/badge/cosign-keyless-blue?logo=docker)](https://docs.sigstore.dev/cosign/overview/)
+[![Languages: 6](https://img.shields.io/badge/scaffolders-python%20%7C%20go%20%7C%20nodejs%20%7C%20java%20%7C%20rust%20%7C%20dotnet-blueviolet)](./templates/backstage-scaffolder/)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
+
 > Production-grade implementation of the enterprise platform's paved road. New services land on this road and within ≤ 60 minutes get: hardened multi-arch image → signed + SBOM + SLSA L3 → GitOps deploy → OTel-instrumented → SLOs as code → policy-verified at admission.
 >
 > This tree is **code**. Governance/PM documents live under `/app/docs/`.

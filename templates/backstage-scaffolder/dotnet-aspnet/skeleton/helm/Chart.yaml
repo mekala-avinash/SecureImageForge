@@ -1,0 +1,10 @@
+apiVersion: v2
+name: {{service_name}}
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+description: Paved-road ASP.NET Core 9 service.
+dependencies:
+  - name: acme-platform-lib
+    version: "1.0.0"
+    repository: "file://../../../../platform/helm-library"

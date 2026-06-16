@@ -55,6 +55,8 @@ LANGUAGE_TEMPLATES = {
     "go":       "go-gin",
     "nodejs":   "nodejs-express",
     "java":     "java-springboot",
+    "rust":     "rust-axum",
+    "dotnet":   "dotnet-aspnet",
 }
 
 
@@ -354,6 +356,30 @@ def ns_bootstrap(
     console.print(f"[green]✓[/green] namespace {name} present (PSS=restricted, paved-road=true).")
 
 
+# ── demo ─────────────────────────────────────────────────────────────────────
+@app.command()
+def demo(
+    keep: bool = typer.Option(False, "--keep", help="Keep the kind cluster after the run."),
+) -> None:
+    """One-liner: spin up kind + ArgoCD + scaffold a sample service end-to-end.
+
+    Wraps `scripts/validate-e2e.sh`. Requires docker, kind, kubectl, helm on PATH.
+    """
+    script = PLATFORM_ROOT / "scripts" / "validate-e2e.sh"
+    if not script.is_file():
+        console.print(f"[red]validate-e2e.sh not found at {script}[/red]")
+        raise typer.Exit(1)
+    env = {**os.environ}
+    if keep:
+        env["KEEP"] = "1"
+    console.print(Panel.fit(
+        f"[bold]pavedroad demo[/bold]\n  script: {script}\n  keep:   {keep}",
+        title="paved-road one-liner demo",
+    ))
+    result = subprocess.run(["bash", str(script)], env=env)
+    raise typer.Exit(result.returncode)
+
+
 # ── cleanup / migrate / version ──────────────────────────────────────────────
 @app.command()
 def cleanup(service: str = typer.Option(..., "--service", "-s"),
@@ -377,7 +403,7 @@ def migrate(path: Path = typer.Argument(Path.cwd())):
 @app.command()
 def version():
     """Print version + platform root."""
-    console.print(f"pavedroad 1.1.0  (platform root: {PLATFORM_ROOT})")
+    console.print(f"pavedroad 1.2.0  (platform root: {PLATFORM_ROOT})")
 
 
 if __name__ == "__main__":
