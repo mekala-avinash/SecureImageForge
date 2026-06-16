@@ -58,41 +58,41 @@ LANGUAGE_TEMPLATES = {
 }
 
 
-@new_app.command("service")
-def new_service(
-    name: str = typer.Option(..., "--name", "-n", help="Service name (kebab-case)."),
-    language: str = typer.Option("python", "--language", "-l",
-                                 help=f"One of {sorted(LANGUAGE_TEMPLATES)}."),
-    team: str = typer.Option(..., "--team", "-t", help="Owning team slug."),
-    output_dir: Path = typer.Option(Path.cwd(), "--out", "-o", help="Where to render the new repo."),
-) -> None:
-    """Scaffold a new service onto the paved road."""
-    if language not in LANGUAGE_TEMPLATES:
-        console.print(f"[red]Unsupported language[/red]: {language}. "
-                      f"Choose from {sorted(LANGUAGE_TEMPLATES)}.")
-        raise typer.Exit(2)
-
-    template_path = (
+def _resolve_template_path(language: str) -> Path:
+    """Resolve the skeleton directory for a supported language."""
+    return (
         PLATFORM_ROOT / "templates" / "backstage-scaffolder"
         / LANGUAGE_TEMPLATES[language] / "skeleton"
     )
+
+
+def _validate_new_service_args(language: str, template_path: Path, target: Path) -> None:
+    """Fail fast on bad inputs. Raises typer.Exit on any error."""
+    if language not in LANGUAGE_TEMPLATES:
+        console.print(
+            f"[red]Unsupported language[/red]: {language}. "
+            f"Choose from {sorted(LANGUAGE_TEMPLATES)}."
+        )
+        raise typer.Exit(2)
     if not template_path.is_dir():
         console.print(f"[red]Template not found:[/red] {template_path}")
         raise typer.Exit(1)
-
-    target = output_dir / name
     if target.exists():
         console.print(f"[red]Target {target} already exists.[/red]")
         raise typer.Exit(1)
 
-    console.print(Panel.fit(
-        f"[bold]Scaffolding[/bold] {name}\n"
-        f"  language: {language}\n"
-        f"  team:     {team}\n"
-        f"  output:   {target}",
-        title="pavedroad new service",
-    ))
 
+def _substitute_tokens(text: str, *, name: str, team: str, language: str) -> str:
+    """Replace cookiecutter-style tokens with the user-supplied values."""
+    return (text
+            .replace("{{service_name}}", name)
+            .replace("{{team}}", team)
+            .replace("{{language}}", language)
+            .replace("{{description}}", f"Paved-road {language} service."))
+
+
+def _render_skeleton(template_path: Path, target: Path, *, name: str, team: str, language: str) -> None:
+    """Copy `template_path` → `target`, substituting tokens in text files."""
     target.mkdir(parents=True)
     for src in template_path.rglob("*"):
         rel = src.relative_to(template_path)
@@ -102,16 +102,23 @@ def new_service(
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         text = _read_text(src)
-        if text is not None:
-            text = (text
-                    .replace("{{service_name}}", name)
-                    .replace("{{team}}", team)
-                    .replace("{{language}}", language)
-                    .replace("{{description}}", f"Paved-road {language} service."))
-            dst.write_text(text)
-        else:
+        if text is None:
             shutil.copy2(src, dst)
+        else:
+            dst.write_text(_substitute_tokens(text, name=name, team=team, language=language))
 
+
+def _print_new_service_summary(name: str, language: str, team: str, target: Path) -> None:
+    console.print(Panel.fit(
+        f"[bold]Scaffolding[/bold] {name}\n"
+        f"  language: {language}\n"
+        f"  team:     {team}\n"
+        f"  output:   {target}",
+        title="pavedroad new service",
+    ))
+
+
+def _print_new_service_next_steps(name: str) -> None:
     console.print("[green]✓[/green] Files rendered")
     console.print("[green]✓[/green] Catalog entry added")
     console.print("[green]✓[/green] CI workflows wired (GitHub + GitLab + Azure DevOps)")
@@ -121,6 +128,24 @@ def new_service(
         f"  make bootstrap && make test\n"
         f"  git init && gh repo create acme/{name} --private --source . --push\n"
     )
+
+
+@new_app.command("service")
+def new_service(
+    name: str = typer.Option(..., "--name", "-n", help="Service name (kebab-case)."),
+    language: str = typer.Option("python", "--language", "-l",
+                                 help=f"One of {sorted(LANGUAGE_TEMPLATES)}."),
+    team: str = typer.Option(..., "--team", "-t", help="Owning team slug."),
+    output_dir: Path = typer.Option(Path.cwd(), "--out", "-o", help="Where to render the new repo."),
+) -> None:
+    """Scaffold a new service onto the paved road."""
+    template_path = _resolve_template_path(language) if language in LANGUAGE_TEMPLATES \
+                    else PLATFORM_ROOT / "templates" / "backstage-scaffolder" / language / "skeleton"
+    target = output_dir / name
+    _validate_new_service_args(language, template_path, target)
+    _print_new_service_summary(name, language, team, target)
+    _render_skeleton(template_path, target, name=name, team=team, language=language)
+    _print_new_service_next_steps(name)
 
 
 def _read_text(p: Path) -> Optional[str]:
@@ -206,6 +231,45 @@ def promote(
 
 
 # ── watch / status / sync / rollback (real ArgoCD + K8s) ─────────────────────
+def _collect_argocd_status(app_name: str, out: dict) -> None:
+    try:
+        a = argo.get_app(app_name)
+        out["argocd"] = a.__dict__
+    except Exception as e:
+        out["argocd_error"] = str(e)
+
+
+def _collect_deployment_status(service: str, ns: str, out: dict) -> None:
+    try:
+        d = k8s.get_deployment(service, namespace=ns)
+        out["deployment"] = d.__dict__
+    except Exception as e:
+        out["deployment_error"] = str(e)
+
+
+def _render_status_table(out: dict, *, service: str, env: str) -> Table:
+    t = Table(title=f"pavedroad status — {service}@{env}")
+    t.add_column("Key")
+    t.add_column("Value")
+    _add_section_rows(t, out, "argocd")
+    _add_section_rows(t, out, "deployment")
+    _add_error_row(t, out, "argocd")
+    _add_error_row(t, out, "deployment")
+    return t
+
+
+def _add_section_rows(t: Table, out: dict, section: str) -> None:
+    if section in out:
+        for k, v in out[section].items():
+            t.add_row(f"{section}.{k}", str(v))
+
+
+def _add_error_row(t: Table, out: dict, section: str) -> None:
+    key = f"{section}_error"
+    if key in out:
+        t.add_row(section, f"[red]{out[key]}[/red]")
+
+
 @app.command()
 def status(
     service: str = typer.Option(..., "--service", "-s"),
@@ -217,35 +281,13 @@ def status(
     ns = namespace or f"{service}-{env}"
     app_name = f"{service}-{env}"
     out: dict = {"service": service, "env": env, "namespace": ns}
-    try:
-        a = argo.get_app(app_name)
-        out["argocd"] = a.__dict__
-    except Exception as e:
-        out["argocd_error"] = str(e)
-    try:
-        d = k8s.get_deployment(service, namespace=ns)
-        out["deployment"] = d.__dict__
-    except Exception as e:
-        out["deployment_error"] = str(e)
+    _collect_argocd_status(app_name, out)
+    _collect_deployment_status(service, ns, out)
 
     if json_out:
         console.print_json(_json.dumps(out))
         return
-
-    t = Table(title=f"pavedroad status — {service}@{env}")
-    t.add_column("Key")
-    t.add_column("Value")
-    if "argocd" in out:
-        for k, v in out["argocd"].items():
-            t.add_row(f"argocd.{k}", str(v))
-    if "deployment" in out:
-        for k, v in out["deployment"].items():
-            t.add_row(f"deployment.{k}", str(v))
-    if "argocd_error" in out:
-        t.add_row("argocd", f"[red]{out['argocd_error']}[/red]")
-    if "deployment_error" in out:
-        t.add_row("deployment", f"[red]{out['deployment_error']}[/red]")
-    console.print(t)
+    console.print(_render_status_table(out, service=service, env=env))
 
 
 @app.command()

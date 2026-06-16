@@ -8,22 +8,23 @@ Includes:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
+import time
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
+
 # ── structured JSON logging with trace correlation ────────────────────────────
-import json
-from datetime import datetime, timezone
-
-
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        payload = {
+        payload: dict[str, Any] = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname.lower(),
             "service": os.environ.get("OTEL_SERVICE_NAME", "{{service_name}}"),
@@ -35,7 +36,7 @@ class JsonFormatter(logging.Formatter):
             ctx = get_current_span().get_span_context()
             if ctx and ctx.is_valid:
                 payload["trace_id"] = f"{ctx.trace_id:032x}"
-                payload["span_id"] = f"{ctx.span_id:016x}"
+                payload["span_id"]  = f"{ctx.span_id:016x}"
         except Exception:
             pass
         return json.dumps(payload)
@@ -49,13 +50,12 @@ log = logging.getLogger(__name__)
 # ── app + metrics ────────────────────────────────────────────────────────────
 app = FastAPI(title="{{service_name}}", version="0.1.0")
 
-REQUESTS = Counter("http_requests_total", "Total HTTP requests", ["method", "path", "code"])
-LATENCY = Histogram("http_request_duration_seconds", "HTTP request duration", ["method", "path"])
+REQUESTS: Counter = Counter("http_requests_total", "Total HTTP requests", ["method", "path", "code"])
+LATENCY:  Histogram = Histogram("http_request_duration_seconds", "HTTP request duration", ["method", "path"])
 
 
 @app.middleware("http")
-async def metrics_middleware(request, call_next):
-    import time
+async def metrics_middleware(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     start = time.perf_counter()
     response = await call_next(request)
     elapsed = time.perf_counter() - start
@@ -65,23 +65,23 @@ async def metrics_middleware(request, call_next):
 
 
 @app.get("/healthz")
-async def healthz():
+async def healthz() -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
 @app.get("/ready")
-async def ready():
+async def ready() -> JSONResponse:
     # Extend with real dependency checks (DB, Redis) in production.
     return JSONResponse({"ok": True})
 
 
 @app.get("/metrics")
-async def metrics():
+async def metrics() -> PlainTextResponse:
     return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/api/v1/items")
-async def list_items():
+async def list_items() -> dict[str, list[dict[str, Any]]]:
     log.info("listing items")
     return {"items": [{"id": 1, "name": "example"}]}
 

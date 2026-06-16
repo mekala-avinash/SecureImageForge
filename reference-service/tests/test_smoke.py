@@ -1,13 +1,25 @@
 """Smoke test — verifies endpoints render without errors."""
 from fastapi.testclient import TestClient
+
 from reference_service.main import app
 
 c = TestClient(app)
 
-def test_healthz():       assert c.get("/healthz").status_code == 200
-def test_ready():         assert c.get("/ready").json()["ok"] is True
-def test_metrics_format(): assert "http_requests_total" in c.get("/metrics").text
-def test_items_crud():
+
+def test_healthz() -> None:
+    assert c.get("/healthz").status_code == 200
+
+
+def test_ready() -> None:
+    # Prefer truthiness over `== True` / `is True` (PEP 8 / E712).
+    assert c.get("/ready").json()["ok"]
+
+
+def test_metrics_format() -> None:
+    assert "http_requests_total" in c.get("/metrics").text
+
+
+def test_items_crud() -> None:
     assert c.get("/api/v1/items").status_code == 200
     assert c.post("/api/v1/items", json={"id": 2, "name": "two"}).status_code == 201
     assert c.get("/api/v1/items/2").json()["name"] == "two"

@@ -15,8 +15,9 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel
@@ -25,7 +26,7 @@ from pydantic import BaseModel
 # ── structured JSON logs with trace correlation ──────────────────────────────
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        out = {
+        out: dict[str, Any] = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname.lower(),
             "service": os.environ.get("OTEL_SERVICE_NAME", "reference-service"),
@@ -50,14 +51,14 @@ log = logging.getLogger("reference_service")
 # ── app + metrics ────────────────────────────────────────────────────────────
 app = FastAPI(title="reference-service", version=os.environ.get("APP_VERSION", "0.1.0"))
 
-REQS = Counter("http_requests_total", "Total HTTP requests", ["method", "path", "code"])
-LAT  = Histogram("http_request_duration_seconds", "HTTP request duration", ["method", "path"])
+REQS: Counter = Counter("http_requests_total", "Total HTTP requests", ["method", "path", "code"])
+LAT:  Histogram = Histogram("http_request_duration_seconds", "HTTP request duration", ["method", "path"])
 
-ITEMS: dict[int, dict] = {1: {"id": 1, "name": "example"}}
+ITEMS: dict[int, dict[str, Any]] = {1: {"id": 1, "name": "example"}}
 
 
 @app.middleware("http")
-async def _metrics_mw(request, call_next):
+async def _metrics_mw(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     start = time.perf_counter()
     resp = await call_next(request)
     REQS.labels(request.method, request.url.path, str(resp.status_code)).inc()
@@ -66,18 +67,18 @@ async def _metrics_mw(request, call_next):
 
 
 @app.get("/healthz")
-async def healthz():
+async def healthz() -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
 @app.get("/ready")
-async def ready():
+async def ready() -> JSONResponse:
     # Replace stub with real dependency checks (DB, Redis, …) in production.
     return JSONResponse({"ok": True, "deps": {"db": "ok", "cache": "ok"}})
 
 
 @app.get("/metrics")
-async def metrics():
+async def metrics() -> PlainTextResponse:
     return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -87,13 +88,13 @@ class Item(BaseModel):
 
 
 @app.get("/api/v1/items")
-async def list_items():
+async def list_items() -> dict[str, list[dict[str, Any]]]:
     log.info("listing items")
     return {"items": list(ITEMS.values())}
 
 
 @app.get("/api/v1/items/{item_id}")
-async def get_item(item_id: int):
+async def get_item(item_id: int) -> dict[str, Any]:
     item = ITEMS.get(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="not found")
@@ -101,7 +102,7 @@ async def get_item(item_id: int):
 
 
 @app.post("/api/v1/items", status_code=201)
-async def create_item(item: Item):
+async def create_item(item: Item) -> Item:
     ITEMS[item.id] = item.model_dump()
     log.info("created item %s", item.id)
     return item
