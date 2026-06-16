@@ -124,6 +124,19 @@ Complete — documentation deliverable. No application code was modified.
     `acme/platform` and `acme/gitops`). Each scaffolder skeleton now ships its
     own `renovate.json` that extends the platform's config.
 
+- 2026-02: **Operator handover pack** for the three live-infra actions:
+  - `/app/scripts/configure-platform-secrets.sh` upgraded with `DRY_RUN=1`
+    support, repo accessibility + admin-permission preflight check.
+  - `/app/scripts/configure-branch-protection.sh` (new) — idempotent `gh api`
+    PUT against `/repos/<org>/<repo>/branches/<branch>/protection` setting
+    required status checks (e2e-paved-road + reusable-build), 2 approving
+    reviews, CODEOWNERS, signed commits, linear history, no force push,
+    required conversation resolution.
+  - `/app/docs/runbooks/3-action-handover.md` — 20-minute step-by-step runbook
+    covering: secret population (with `aws`/`gh` commands for each value), the
+    "Save to GitHub" push flow, Renovate App install + branch protection, and
+    a final sanity-check PR procedure. Includes OIDC migration follow-on.
+
 ## Next Actions
 - Day 0: Send kickoff comms (Slack + email + run all-hands).
 - Day 1: Open the 4 ATS requisitions using the JDs.

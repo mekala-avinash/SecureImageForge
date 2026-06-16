@@ -31,13 +31,23 @@ set -euo pipefail
 
 REPO="${1:-${PLATFORM_REPO:-acme/platform}}"
 ENV_FILE="${2:-.platform-secrets.env}"
+DRY_RUN="${DRY_RUN:-0}"
 
 ok()   { printf "  \033[1;32m✓\033[0m %s\n" "$*"; }
 warn() { printf "  \033[1;33m!\033[0m %s\n" "$*"; }
 die()  { printf "  \033[1;31m✗\033[0m %s\n" "$*"; exit 1; }
 
+if [ "$DRY_RUN" = "1" ]; then
+  warn "DRY_RUN=1 — no GitHub mutations will be made."
+fi
+
 command -v gh >/dev/null 2>&1 || die "gh CLI missing — install with: brew install gh"
 gh auth status >/dev/null 2>&1 || die "gh not logged in — run: gh auth login"
+
+# Verify the repo is reachable AND the caller can write secrets.
+gh repo view "$REPO" >/dev/null 2>&1 || die "cannot access $REPO — check repo name and gh permissions"
+gh api "repos/$REPO" -q '.permissions.admin' 2>/dev/null | grep -qx true \
+  || warn "you may not have admin on $REPO — secret writes may 403"
 
 REQUIRED_VARS=(AWS_ACCOUNT AWS_REGION ECR_USER)
 REQUIRED_SECRETS=(GITOPS_TOKEN ECR_PASS RENOVATE_TOKEN)
